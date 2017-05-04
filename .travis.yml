@@ -25,9 +25,9 @@ matrix:
       osx_image: xcode6.4
       xcode_sdk: macosx10.10
       sudo: required
-branches:
-  only:
-    - master
+# branches:
+#   only:
+#     - master
 install:
 # Install Apple's NullAudio device. Travis' VMs don't have any audio devices installed.
   - sudo xcodebuild -project BGMApp/BGMAppTests/NullAudio/AudioDriverExamples.xcodeproj -target NullAudio DSTROOT="/" install
