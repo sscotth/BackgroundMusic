@@ -56,8 +56,8 @@ script:
   - xcodebuild -workspace BGM.xcworkspace -scheme 'Background Music' test
   - xcodebuild -workspace BGM.xcworkspace -scheme 'BGMXPCHelper' test
 # Copy app file for deployment
-  - mkdir dist
-  - zip -r -X "dist/Background Music.app.zip" "/Applications/Background Music.app"
+  - cp -r "/Applications/Background Music.app" .
+  - zip -r -X BackgroundMusic.app.zip "Background Music.app"
 # Uninstall Background Music.
   - yes | ./uninstall.sh
 # Check the BGM dirs and files were removed.
@@ -73,7 +73,7 @@ deploy:
   provider: releases
   api_key:
     secure: mkNmz7SsFhOVggVUbBHDMBqp+uPSu917bYNFSuIZxZth9nzBVITLNyL9x8CDMq7nxnbvYYYGtb3hVFAh8I2mC27BhLPCAlZlUWsSnjjvUxJBNNPxCqS0UxKesIpycb6zRilxb6JbyE4YR7fMbSLUnU2Zniq7k88PiAMw4rHypFljfkXtCwxw6kcUpVPMkneR3PPgsKrdcEAeGHw1H7IVtfg/7YAK4qDwfFKlI0O4g7fTAitcwwtUHaxN/dgIEZO6NRnssGIz/aJXmPMMSi9qv4x98XCL2UpfuLFtSGUHFOnpXXh+Tn7XJ/+pav1SoRMa//vBkrNhDUrrgj0fIkNHMt49jgUUFv0VRm+8JzTkTaX7v7mP8sDUK6cakiUethLYnPuU1sjfAaAaG+PPLnqZfyA3wXRC9ix9xCPRnfx9pl64nB8PJNdbRqq5FScR5utQeTlmeCAkqcLzg9Rau1kwVUMD4iOM2n3DYPUZXpNCREzoPSy33j0RnMmqozhz7Ve2w153urD6M+di22scdZ9teBZfFh4xm5mYRAwGN5nSw50N+5sa5MmwG9KjtV64kHIUHZiQY/tnolTIZCQ10o+YgWFyGREUZRX5owD3LMDq4bmJQpLIP2EiFKxD4jWCQpKGKTz0Gsf97yPOS1dI1Pvf+JcA2Vu1JI+d6LPvarU13wA=
-  file: "dist/Background Music.app.zip"
+  file: "BackgroundMusic.app.zip"
   skip_cleanup: true
   on:
     repo: sscotth/BackgroundMusic
