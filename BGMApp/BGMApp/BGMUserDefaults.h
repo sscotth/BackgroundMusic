@@ -17,13 +17,18 @@
 //  BGMUserDefaults.h
 //  BGMApp
 //
-//  Copyright © 2016, 2017 Kyle Neideck
+//  Copyright © 2016-2019 Kyle Neideck
 //
 //  A simple wrapper around our use of NSUserDefaults. Used to store the preferences/state that only
-//  apply to BGMApp. The others are stored on BGMDriver.
+//  apply to BGMApp. The others are stored by BGMDriver.
+//
+//  Private data will be stored in the user's keychain instead of user defaults.
 //
 
-// System includes
+// Local Includes
+#import "BGMStatusBarItem.h"
+
+// System Includes
 #import <Cocoa/Cocoa.h>
 
 
@@ -39,6 +44,21 @@
 @property NSString* __nullable selectedMusicPlayerID;
 
 @property BOOL autoPauseMusicEnabled;
+
+// The UIDs of the output devices most recently selected by the user. The most-recently selected
+// device is at index 0. See BGMPreferredOutputDevices.
+@property NSArray<NSString*>* preferredDeviceUIDs;
+
+// The (type of) icon to show in the button in the status bar. (The button the user clicks to open
+// BGMApp's main menu.)
+@property BGMStatusBarIcon statusBarIcon;
+
+// The auth code we're required to send when connecting to GPMDP. Stored in the keychain. Reading
+// this property is thread-safe, but writing it isn't.
+//
+// Returns nil if no code is found or if reading fails. If writing fails, an error is logged, but no
+// exception is thrown.
+@property NSString* __nullable googlePlayMusicDesktopPlayerPermanentAuthCode;
 
 @end
 

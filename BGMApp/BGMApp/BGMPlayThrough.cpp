@@ -17,7 +17,7 @@
 //  BGMPlayThrough.cpp
 //  BGMApp
 //
-//  Copyright © 2016, 2017 Kyle Neideck
+//  Copyright © 2016, 2017, 2020 Kyle Neideck
 //
 
 // Self Include
@@ -30,6 +30,7 @@
 // PublicUtility Includes
 #include "CAAtomic.h"
 #include "CAHALAudioSystemObject.h"
+#include "CAPropertyAddress.h"
 
 // STL Includes
 #include <algorithm>  // For std::max
@@ -40,21 +41,13 @@
 #include <mach/task.h>
 
 
+// The number of IO cycles (roughly) to wait for our IOProcs to stop themselves before assuming something
+// went wrong. If that happens, we try to stop them from a non-IO thread and continue anyway. 
+static const UInt32 kStopIOProcTimeoutInIOCycles = 600;
+
 #pragma mark Construction/Destruction
 
-static const AudioObjectPropertyAddress kDeviceIsRunningAddress = {
-    kAudioDevicePropertyDeviceIsRunning,
-    kAudioObjectPropertyScopeGlobal,
-    kAudioObjectPropertyElementMaster
-};
-
-static const AudioObjectPropertyAddress kProcessorOverloadAddress = {
-    kAudioDeviceProcessorOverload,
-    kAudioObjectPropertyScopeGlobal,
-    kAudioObjectPropertyElementMaster
-};
-
-BGMPlayThrough::BGMPlayThrough(CAHALAudioDevice inInputDevice, CAHALAudioDevice inOutputDevice)
+BGMPlayThrough::BGMPlayThrough(BGMAudioDevice inInputDevice, BGMAudioDevice inOutputDevice)
 :
     mInputDevice(inInputDevice),
     mOutputDevice(inOutputDevice)
@@ -75,7 +68,7 @@ BGMPlayThrough::~BGMPlayThrough()
     }
 }
 
-void    BGMPlayThrough::Init(CAHALAudioDevice inInputDevice, CAHALAudioDevice inOutputDevice)
+void    BGMPlayThrough::Init(BGMAudioDevice inInputDevice, BGMAudioDevice inOutputDevice)
 {
     BGMAssert(mInputDeviceIOProcState.is_lock_free(),
               "BGMPlayThrough::BGMPlayThrough: !mInputDeviceIOProcState.is_lock_free()");
@@ -149,16 +142,16 @@ void    BGMPlayThrough::Activate()
         
         DebugMsg("BGMPlayThrough::Activate: Registering for notifications from BGMDevice.");
         
-        mInputDevice.AddPropertyListener(kDeviceIsRunningAddress,
+        mInputDevice.AddPropertyListener(CAPropertyAddress(kAudioDevicePropertyDeviceIsRunning),
                                          &BGMPlayThrough::BGMDeviceListenerProc,
                                          this);
-        mInputDevice.AddPropertyListener(kProcessorOverloadAddress,
+        mInputDevice.AddPropertyListener(CAPropertyAddress(kAudioDeviceProcessorOverload),
                                          &BGMPlayThrough::BGMDeviceListenerProc,
                                          this);
         
         bool isBGMDevice = true;
         CATry
-        isBGMDevice = IsBGMDevice(mInputDevice);
+        isBGMDevice = mInputDevice.IsBGMDeviceInstance();
         CACatch
         
         if(isBGMDevice)
@@ -171,7 +164,7 @@ void    BGMPlayThrough::Activate()
         {
             LogWarning("BGMPlayThrough::Activate: Playthrough activated with an output device other "
                        "than BGMDevice. This hasn't been tested and is almost definitely a bug.");
-            BGMAssert(false, "BGMPlayThrough::Activate: !IsBGMDevice(mInputDevice)");
+            BGMAssert(false, "BGMPlayThrough::Activate: !mInputDevice.IsBGMDeviceInstance()");
         }
     }
 }
@@ -187,7 +180,7 @@ void    BGMPlayThrough::Deactivate()
         bool inputDeviceIsBGMDevice = true;
         
         CATry
-        inputDeviceIsBGMDevice = IsBGMDevice(mInputDevice);
+        inputDeviceIsBGMDevice = mInputDevice.IsBGMDeviceInstance();
         CACatch
         
         // Unregister notification listeners.
@@ -195,28 +188,30 @@ void    BGMPlayThrough::Deactivate()
         {
             // There's not much we can do if these calls throw. The docs for AudioObjectRemovePropertyListener
             // just say that means it failed.
-            BGMLogAndSwallowExceptions("BGMPlayThrough::Deactivate", [&]() {
-                mInputDevice.RemovePropertyListener(kDeviceIsRunningAddress,
+            BGMLogAndSwallowExceptions("BGMPlayThrough::Deactivate", [&] {
+                mInputDevice.RemovePropertyListener(CAPropertyAddress(kAudioDevicePropertyDeviceIsRunning),
                                                     &BGMPlayThrough::BGMDeviceListenerProc,
                                                     this);
             });
             
-            BGMLogAndSwallowExceptions("BGMPlayThrough::Deactivate", [&]() {
-                mInputDevice.RemovePropertyListener(kProcessorOverloadAddress,
+            BGMLogAndSwallowExceptions("BGMPlayThrough::Deactivate", [&] {
+                mInputDevice.RemovePropertyListener(CAPropertyAddress(kAudioDeviceProcessorOverload),
                                                     &BGMPlayThrough::BGMDeviceListenerProc,
                                                     this);
             });
             
-            BGMLogAndSwallowExceptions("BGMPlayThrough::Deactivate", [&]() {
+            BGMLogAndSwallowExceptions("BGMPlayThrough::Deactivate", [&] {
                 mInputDevice.RemovePropertyListener(kBGMRunningSomewhereOtherThanBGMAppAddress,
                                                     &BGMPlayThrough::BGMDeviceListenerProc,
                                                     this);
             });
         }
+
+        BGMLogAndSwallowExceptions("BGMPlayThrough::Deactivate", [&] {
+            Stop();
+        });
         
-        Stop();
-        
-        BGMLogAndSwallowExceptions("BGMPlayThrough::Deactivate", [&]() {
+        BGMLogAndSwallowExceptions("BGMPlayThrough::Deactivate", [&] {
             DestroyIOProcIDs();
         });
         
@@ -243,15 +238,6 @@ void    BGMPlayThrough::AllocateBuffer()
     mBuffer.Allocate(outputFormat[0].mChannelsPerFrame,
                      outputFormat[0].mBytesPerFrame,
                      mOutputDevice.GetIOBufferSize() * 20);
-}
-
-// static
-bool    BGMPlayThrough::IsBGMDevice(CAHALAudioDevice inDevice)
-{
-    CFStringRef uid = inDevice.CopyDeviceUID();
-    bool isBGMDevice = CFEqual(uid, CFSTR(kBGMDeviceUID));
-    CFRelease(uid);
-    return isBGMDevice;
 }
 
 void    BGMPlayThrough::CreateIOProcIDs()
@@ -331,7 +317,7 @@ void    BGMPlayThrough::DestroyIOProcIDs()
 
     DebugMsg("BGMPlayThrough::DestroyIOProcIDs: Destroying IOProcs");
 
-    auto destroy = [](CAHALAudioDevice& device, const char* deviceName, AudioDeviceIOProcID& ioProcID) {
+    auto destroy = [](BGMAudioDevice& device, const char* deviceName, AudioDeviceIOProcID& ioProcID) {
 #if !DEBUG
     #pragma unused (deviceName)
 #endif
@@ -387,8 +373,8 @@ bool    BGMPlayThrough::CheckIOProcsAreStopped() const noexcept
     return statesOK;
 }
 
-void    BGMPlayThrough::SetDevices(CAHALAudioDevice* __nullable inInputDevice,
-                                   CAHALAudioDevice* __nullable inOutputDevice)
+void    BGMPlayThrough::SetDevices(const BGMAudioDevice* __nullable inInputDevice,
+                                   const BGMAudioDevice* __nullable inOutputDevice)
 {
     CAMutex::Locker stateLocker(mStateMutex);
     
@@ -428,7 +414,12 @@ void    BGMPlayThrough::Start()
     if(mPlayingThrough)
     {
         DebugMsg("BGMPlayThrough::Start: Already started/starting.");
-        ReleaseThreadsWaitingForOutputToStart();
+
+        if(mOutputDeviceIOProcState == IOState::Running)
+        {
+            ReleaseThreadsWaitingForOutputToStart();
+        }
+
         return;
     }
     
@@ -520,7 +511,7 @@ OSStatus    BGMPlayThrough::WaitForOutputDeviceToStart() noexcept
             return kAudioHardwareBadDeviceError;
         }
     }
-    catch(CAException e)
+    catch(const CAException& e)
     {
         BGMLogException(e);
         return e.GetError();
@@ -578,20 +569,21 @@ OSStatus    BGMPlayThrough::WaitForOutputDeviceToStart() noexcept
     while((theError != KERN_SUCCESS) &&         // Signalled from the IOProc.
           (state == IOState::Starting) &&       // IO state changed.
           (waitedNsec < kStartIOTimeoutNsec));  // Timed out.
-    
-#if DEBUG
-    UInt64 startedBy = mach_absolute_time();
-    
-    struct mach_timebase_info baseInfo = { 0, 0 };
-    mach_timebase_info(&baseInfo);
-    UInt64 base = baseInfo.numer / baseInfo.denom;
-    
-    DebugMsg("BGMPlayThrough::WaitForOutputDeviceToStart: Started %f ms after notification, %f ms "
-             "after entering WaitForOutputDeviceToStart.",
-             static_cast<Float64>(startedBy - mToldOutputDeviceToStartAt) * base / NSEC_PER_MSEC,
-             static_cast<Float64>(startedBy - startedAt) * base / NSEC_PER_MSEC);
-#endif
-    
+
+    if(BGMDebugLoggingIsEnabled())
+    {
+        UInt64 startedBy = mach_absolute_time();
+
+        struct mach_timebase_info baseInfo = { 0, 0 };
+        mach_timebase_info(&baseInfo);
+        UInt64 base = baseInfo.numer / baseInfo.denom;
+
+        DebugMsg("BGMPlayThrough::WaitForOutputDeviceToStart: Started %f ms after notification, %f "
+                 "ms after entering WaitForOutputDeviceToStart.",
+                 static_cast<Float64>(startedBy - mToldOutputDeviceToStartAt) * base / NSEC_PER_MSEC,
+                 static_cast<Float64>(startedBy - startedAt) * base / NSEC_PER_MSEC);
+    }
+
     // Figure out which error code to return.
     switch (theError)
     {
@@ -613,7 +605,7 @@ OSStatus    BGMPlayThrough::WaitForOutputDeviceToStart() noexcept
 
 // Release any threads waiting for the output device to start. This function doesn't take mStateMutex
 // because it gets called on the IO thread, which is realtime priority.
-void    BGMPlayThrough::ReleaseThreadsWaitingForOutputToStart() const
+void    BGMPlayThrough::ReleaseThreadsWaitingForOutputToStart()
 {
     if(mActive)
     {
@@ -621,13 +613,10 @@ void    BGMPlayThrough::ReleaseThreadsWaitingForOutputToStart() const
         
         if(semaphore != SEMAPHORE_NULL)
         {
-            DebugMsg("BGMPlayThrough::ReleaseThreadsWaitingForOutputToStart: Releasing waiting threads");
+            mRTLogger.LogReleasingWaitingThreads();
+
             kern_return_t theError = semaphore_signal_all(semaphore);
-            
-            // TODO: Tell another thread to log this error, since we might be on a realtime thread.
-            BGM_Utils::LogIfMachError("BGMPlayThrough::ReleaseThreadsWaitingForOutputToStart",
-                                      "semaphore_signal_all",
-                                      theError);
+            mRTLogger.LogIfMachError_ReleaseWaitingThreadsSignal(theError);
         }
     }
 }
@@ -647,40 +636,49 @@ OSStatus    BGMPlayThrough::Stop()
         bool outputDeviceAlive = false;
         
         CATry
-        inputDeviceAlive = mInputDevice.IsAlive();
+        inputDeviceAlive = CAHALAudioObject::ObjectExists(mInputDevice) && mInputDevice.IsAlive();
         CACatch
         
         CATry
-        outputDeviceAlive = mOutputDevice.IsAlive();
+        outputDeviceAlive =
+            CAHALAudioObject::ObjectExists(mOutputDevice) && mOutputDevice.IsAlive();
         CACatch
+
+        mInputDeviceIOProcState = inputDeviceAlive ? IOState::Stopping : IOState::Stopped;
+        mOutputDeviceIOProcState = outputDeviceAlive ? IOState::Stopping : IOState::Stopped;
         
-        if(inputDeviceAlive)
-        {
-            mInputDeviceIOProcState = IOState::Stopping;
-        }
-        if(outputDeviceAlive)
-        {
-            mOutputDeviceIOProcState = IOState::Stopping;
-        }
-        
-        // Wait for the IOProcs to stop themselves, with a timeout of about four IO cycles. This is so the IOProcs don't get
-        // called after the BGMPlayThrough instance (pointed to by the client data they get from the HAL) is deallocated.
+        // Wait for the IOProcs to stop themselves. This is so the IOProcs don't get called after the BGMPlayThrough instance
+        // (pointed to by the client data they get from the HAL) is deallocated.
         //
         // From Jeff Moore on the Core Audio mailing list:
         //     Note that there is no guarantee about how many times your IOProc might get called after AudioDeviceStop() returns
         //     when you make the call from outside of your IOProc. However, if you call AudioDeviceStop() from inside your IOProc,
         //     you do get the guarantee that your IOProc will not get called again after the IOProc has returned.
         UInt64 totalWaitNs = 0;
-        BGMLogAndSwallowExceptions("BGMPlayThrough::Stop", [&]() {
-            Float64 expectedInputCycleNs =
-                mInputDevice.GetIOBufferSize() * (1 / mInputDevice.GetNominalSampleRate()) * NSEC_PER_SEC;
-            Float64 expectedOutputCycleNs =
-                mOutputDevice.GetIOBufferSize() * (1 / mOutputDevice.GetNominalSampleRate()) * NSEC_PER_SEC;
+        BGM_Utils::LogAndSwallowExceptions(BGMDbgArgs, [&]() {
+            Float64 expectedInputCycleNs = 0;
+
+            if(inputDeviceAlive)
+            {
+                expectedInputCycleNs =
+                    mInputDevice.GetIOBufferSize() * (1 / mInputDevice.GetNominalSampleRate()) *
+                            NSEC_PER_SEC;
+            }
+
+            Float64 expectedOutputCycleNs = 0;
+
+            if(outputDeviceAlive)
+            {
+                expectedOutputCycleNs =
+                    mOutputDevice.GetIOBufferSize() * (1 / mOutputDevice.GetNominalSampleRate()) *
+                            NSEC_PER_SEC;
+            }
+
             UInt64 expectedMaxCycleNs =
                 static_cast<UInt64>(std::max(expectedInputCycleNs, expectedOutputCycleNs));
-            
+
             while((mInputDeviceIOProcState == IOState::Stopping || mOutputDeviceIOProcState == IOState::Stopping)
-                  && (totalWaitNs < 4 * expectedMaxCycleNs))
+                  && (totalWaitNs < kStopIOProcTimeoutInIOCycles * expectedMaxCycleNs))
             {
                 // TODO: If playthrough is started again while we're waiting in this loop we could drop frames. Wait on a
                 //       semaphore instead of sleeping? That way Start() could also signal it, before waiting on the state mutex,
@@ -694,25 +692,25 @@ OSStatus    BGMPlayThrough::Stop()
         // Clean up if the IOProcs didn't stop themselves
         if(mInputDeviceIOProcState == IOState::Stopping && mInputDeviceIOProcID != nullptr)
         {
-            LogWarning("BGMPlayThrough::Stop: The input IOProc didn't stop itself in time. Stopping "
-                       "it from outside of the IO thread.");
+            LogError("BGMPlayThrough::Stop: The input IOProc didn't stop itself in time. Stopping "
+                     "it from outside of the IO thread.");
             
             BGMLogUnexpectedExceptions("BGMPlayThrough::Stop", [&]() {
                 mInputDevice.StopIOProc(mInputDeviceIOProcID);
             });
-            
+
             mInputDeviceIOProcState = IOState::Stopped;
         }
         
         if(mOutputDeviceIOProcState == IOState::Stopping && mOutputDeviceIOProcID != nullptr)
         {
-            LogWarning("BGMPlayThrough::Stop: The output IOProc didn't stop itself in time. Stopping "
-                       "it from outside of the IO thread.");
+            LogError("BGMPlayThrough::Stop: The output IOProc didn't stop itself in time. Stopping "
+                     "it from outside of the IO thread.");
             
             BGMLogUnexpectedExceptions("BGMPlayThrough::Stop", [&]() {
                 mOutputDevice.StopIOProc(mOutputDeviceIOProcID);
             });
-            
+
             mOutputDeviceIOProcState = IOState::Stopped;
         }
         
@@ -734,7 +732,7 @@ void    BGMPlayThrough::StopIfIdle()
     
     CAMutex::Locker stateLocker(mStateMutex);
     
-    BGMAssert(IsBGMDevice(mInputDevice),
+    BGMAssert(mInputDevice.IsBGMDeviceInstance(),
               "BGMDevice not set as input device. StopIfIdle can't tell if other devices are idle.");
     
     if(!IsRunningSomewhereOtherThanBGMApp(mInputDevice))
@@ -757,7 +755,7 @@ void    BGMPlayThrough::StopIfIdle()
                  "queuedAt=", queuedAt);
         
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, waitNsec),
-                       dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0),
+                       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
                        ^{
                            // Check the BGMPlayThrough instance hasn't been destructed since it queued this block
                            if(mActive)
@@ -847,12 +845,12 @@ void    BGMPlayThrough::HandleBGMDeviceIsRunning(BGMPlayThrough* refCon)
     
     // This is dispatched because it can block and
     //   - we might be on a real-time thread, or
-    //   - BGMXPCListener::waitForOutputDeviceToStartWithReply might get called on the same thread just
+    //   - BGMXPCListener::startPlayThroughSyncWithReply might get called on the same thread just
     //     before this and time out waiting for this to run.
     //
     // TODO: We should find a way to do this without dispatching because dispatching isn't actually
     //       real-time safe.
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
+    dispatch_async(BGMGetDispatchQueue_PriorityUserInteractive(), ^{
         if(refCon->mActive)
         {
             CAMutex::Locker stateLocker(refCon->mStateMutex);
@@ -860,7 +858,6 @@ void    BGMPlayThrough::HandleBGMDeviceIsRunning(BGMPlayThrough* refCon)
             // Set to true initially because if we fail to get this property from BGMDevice we want to
             // try to start playthrough anyway.
             bool isRunningSomewhereOtherThanBGMApp = true;
-            
             
             BGMLogAndSwallowExceptions("HandleBGMDeviceIsRunning", [&]() {
                 // IsRunning doesn't always return true when IO is starting. Using
@@ -871,9 +868,8 @@ void    BGMPlayThrough::HandleBGMDeviceIsRunning(BGMPlayThrough* refCon)
             
             if(isRunningSomewhereOtherThanBGMApp)
             {
-#if DEBUG
                 refCon->mToldOutputDeviceToStartAt = mach_absolute_time();
-#endif
+
                 // TODO: Handle expected exceptions (mostly CAExceptions from PublicUtility classes) in Start.
                 //       For any that can't be handled sensibly in Start, catch them here and retry a few
                 //       times (with a very short delay) before handling them by showing an unobtrusive error
@@ -893,7 +889,7 @@ void    BGMPlayThrough::HandleBGMDeviceIsRunningSomewhereOtherThanBGMApp(BGMPlay
     DebugMsg("BGMPlayThrough::HandleBGMDeviceIsRunningSomewhereOtherThanBGMApp: Got notification");
     
     // These notifications don't need to be handled quickly, so we can always dispatch.
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // TODO: Handle expected exceptions (mostly CAExceptions from PublicUtility classes) in StopIfIdle.
         BGMLogUnexpectedExceptions("HandleBGMDeviceIsRunningSomewhereOtherThanBGMApp", [&refCon]() {
             if(refCon->mActive)
@@ -905,7 +901,7 @@ void    BGMPlayThrough::HandleBGMDeviceIsRunningSomewhereOtherThanBGMApp(BGMPlay
 }
 
 // static
-bool    BGMPlayThrough::IsRunningSomewhereOtherThanBGMApp(const CAHALAudioDevice& inBGMDevice)
+bool    BGMPlayThrough::IsRunningSomewhereOtherThanBGMApp(const BGMAudioDevice& inBGMDevice)
 {
     return CFBooleanGetValue(
         static_cast<CFBooleanRef>(
@@ -933,6 +929,7 @@ OSStatus    BGMPlayThrough::InputDeviceIOProc(AudioObjectID           inDevice,
     
     IOState state;
     UpdateIOProcState("InputDeviceIOProc",
+                      refCon->mRTLogger,
                       refCon->mInputDeviceIOProcState,
                       refCon->mInputDeviceIOProcID,
                       refCon->mInputDevice,
@@ -957,9 +954,8 @@ OSStatus    BGMPlayThrough::InputDeviceIOProc(AudioObjectID           inDevice,
         refCon->mBuffer.Store(inInputData,
                               framesToStore,
                               static_cast<CARingBuffer::SampleTime>(inInputTime->mSampleTime));
-    
-    HandleRingBufferError(err, "InputDeviceIOProc", "mBuffer.Store");
-    
+    refCon->mRTLogger.LogIfRingBufferError_Store(err);
+
     CAMemoryBarrier();
     refCon->mLastInputSampleTime = inInputTime->mSampleTime;
     
@@ -975,13 +971,14 @@ OSStatus    BGMPlayThrough::OutputDeviceIOProc(AudioObjectID           inDevice,
                                                const AudioTimeStamp*   inOutputTime,
                                                void* __nullable        inClientData)
 {
-    #pragma unused (inDevice, inNow, inInputData, inInputTime, inOutputTime)
+    #pragma unused (inDevice, inNow, inInputData, inInputTime)
     
     // refCon (reference context) is the instance that created the IOProc
     BGMPlayThrough* const refCon = static_cast<BGMPlayThrough*>(inClientData);
     
     IOState state;
     const bool didChangeState = UpdateIOProcState("OutputDeviceIOProc",
+                                                  refCon->mRTLogger,
                                                   refCon->mOutputDeviceIOProcState,
                                                   refCon->mOutputDeviceIOProcID,
                                                   refCon->mOutputDevice,
@@ -1021,13 +1018,8 @@ OSStatus    BGMPlayThrough::OutputDeviceIOProc(AudioObjectID           inDevice,
         refCon->mInToOutSampleOffset = inOutputTime->mSampleTime - refCon->mLastInputSampleTime;
         
         // Log if we dropped frames
-        if(refCon->mFirstInputSampleTime != refCon->mLastInputSampleTime)
-        {
-            DebugMsg("BGMPlayThrough::OutputDeviceIOProc: Dropped %f frames before output started. %s%f %s%f",
-                     (refCon->mLastInputSampleTime - refCon->mFirstInputSampleTime),
-                     "mFirstInputSampleTime=", refCon->mFirstInputSampleTime,
-                     "mLastInputSampleTime=", refCon->mLastInputSampleTime);
-        }
+        refCon->mRTLogger.LogIfDroppedFrames(refCon->mFirstInputSampleTime,
+                                             refCon->mLastInputSampleTime);
     }
     
     CARingBuffer::SampleTime readHeadSampleTime =
@@ -1055,11 +1047,10 @@ OSStatus    BGMPlayThrough::OutputDeviceIOProc(AudioObjectID           inDevice,
     }
     if(lastInputSampleTime < readHeadSampleTime || outOfBounds)
     {
-        DebugMsg("BGMPlayThrough::OutputDeviceIOProc: No input samples ready at output sample time. %s%lld %s%lld %s%f",
-                 "lastInputSampleTime=", lastInputSampleTime,
-                 "readHeadSampleTime=", readHeadSampleTime,
-                 "mInToOutSampleOffset=", refCon->mInToOutSampleOffset);
-        
+        refCon->mRTLogger.LogNoSamplesReady(lastInputSampleTime,
+                                            readHeadSampleTime,
+                                            refCon->mInToOutSampleOffset);
+
         // Recalculate the in-to-out offset and read head
         refCon->mInToOutSampleOffset = inOutputTime->mSampleTime - lastInputSampleTime;
         readHeadSampleTime = static_cast<CARingBuffer::SampleTime>(inOutputTime->mSampleTime - refCon->mInToOutSampleOffset);
@@ -1067,19 +1058,23 @@ OSStatus    BGMPlayThrough::OutputDeviceIOProc(AudioObjectID           inDevice,
 
     // Copy the frames from the ring buffer
     err = refCon->mBuffer.Fetch(outOutputData, framesToOutput, readHeadSampleTime);
-    
-    HandleRingBufferError(err, "OutputDeviceIOProc", "mBuffer.Fetch");
-    
+    // TODO: Not sure what else we should do to handle these errors, if anything. There's code in
+    //       Apple's CAPlayThrough.cpp sample code that handles them. (Look for
+    //       "kCARingBufferError_OK" around line 707.) Should be easy enough to use, but it's more
+    //       complicated that just directly copying it.
+    refCon->mRTLogger.LogIfRingBufferError_Fetch(err);
+
     refCon->mLastOutputSampleTime = inOutputTime->mSampleTime;
     
     return noErr;
 }
 
 // static
-bool    BGMPlayThrough::UpdateIOProcState(const char* __nullable callerName,
+bool    BGMPlayThrough::UpdateIOProcState(const char* inCallerName,
+                                          BGMPlayThroughRTLogger& inRTLogger,
                                           std::atomic<IOState>& inState,
                                           AudioDeviceIOProcID __nullable inIOProcID,
-                                          CAHALAudioDevice& inDevice,
+                                          BGMAudioDevice& inDevice,
                                           IOState& outNewState)
 {
     BGMAssert(inIOProcID != nullptr, "BGMPlayThrough::UpdateIOProcState: !inIOProcID");
@@ -1089,6 +1084,9 @@ bool    BGMPlayThrough::UpdateIOProcState(const char* __nullable callerName,
     //
     // compare_exchange_strong will return true iff it changed inState from Starting to Running.
     // Otherwise it will set prevState to the current value of inState.
+    //
+    // TODO: We probably don't actually need memory_order_seq_cst (the default). Would it be worth
+    //       changing? Might be worth checking for the other atomics/barriers in this class, too.
     IOState prevState = IOState::Starting;
     bool didChangeState = inState.compare_exchange_strong(prevState, IOState::Running);
 
@@ -1106,21 +1104,28 @@ bool    BGMPlayThrough::UpdateIOProcState(const char* __nullable callerName,
         {
             // The IOProc isn't Starting or Running, so it must be Stopping. That is, it's been
             // told to stop itself.
-            
             BGMAssert(outNewState == IOState::Stopping,
                       "BGMPlayThrough::UpdateIOProcState: Unexpected state: %d",
                       outNewState);
             
             bool stoppedSuccessfully = false;
-            BGMLogAndSwallowExceptionsMsg("BGMPlayThrough::UpdateIOProcState", callerName, [&]() {
-                // TODO: If this throws, tell another thread to log the exception rather than
-                //       logging it from a real-time thread.
+
+            try
+            {
                 inDevice.StopIOProc(inIOProcID);
 
                 // StopIOProc didn't throw, so the IOProc won't be called again until the next
                 // time playthrough is started.
                 stoppedSuccessfully = true;
-            });
+            }
+            catch(CAException e)
+            {
+                inRTLogger.LogExceptionStoppingIOProc(inCallerName, e.GetError());
+            }
+            catch(...)
+            {
+                inRTLogger.LogExceptionStoppingIOProc(inCallerName);
+            }
 
             if(stoppedSuccessfully)
             {
@@ -1133,7 +1138,7 @@ bool    BGMPlayThrough::UpdateIOProcState(const char* __nullable callerName,
                 //
                 // Stop won't return until the IOProc has changed inState to Stopped, unless it
                 // times out, so Stop should still be waiting. And since Start and Stop are
-                // mutually exclusive, so this should be safe.
+                // mutually exclusive, this should be safe.
                 //
                 // But if Stop has timed out and inState has changed, we leave it in its new
                 // state (unless there's some ABA problem thing happening), which I suspect is
@@ -1146,40 +1151,13 @@ bool    BGMPlayThrough::UpdateIOProcState(const char* __nullable callerName,
                 }
                 else
                 {
-                    DebugMsg("BGMPlayThrough::UpdateIOProcState: inState changed since last read "
-                             "outNewState = %d", outNewState);
+                    inRTLogger.LogUnexpectedIOStateAfterStopping(inCallerName,
+                                                                 static_cast<int>(outNewState));
                 }
             }
         }
     }
 
     return didChangeState;
-}
-
-// static
-void    BGMPlayThrough::HandleRingBufferError(CARingBufferError inErr,
-                                              const char* inMethodName,
-                                              const char* inCallReturningErr)
-{
-#if DEBUG
-    if(inErr != kCARingBufferError_OK)
-    {
-        const char* errStr = (inErr == kCARingBufferError_TooMuch ? "kCARingBufferError_TooMuch" :
-                              (inErr == kCARingBufferError_CPUOverload ? "kCARingBufferError_CPUOverload" : "unknown error"));
-
-        DebugMsg("BGMPlayThrough::%s: %s returned %s (%d)", inMethodName, inCallReturningErr, errStr, inErr);
-        
-        // kCARingBufferError_CPUOverload wouldn't mean we have a bug, but I think kCARingBufferError_TooMuch would
-        if(inErr != kCARingBufferError_CPUOverload)
-        {
-            Throw(CAException(inErr));
-        }
-    }
-#else
-    // Not sure what we should do to handle these errors in release builds, if anything.
-    // TODO: There's code in Apple's CAPlayThrough.cpp sample code that handles them. (Look for "kCARingBufferError_OK"
-    //       around line 707.) Should be easy enough to use, but it's more complicated that just directly copying it.
-    #pragma unused (inErr, inMethodName, inCallReturningErr)
-#endif
 }
 

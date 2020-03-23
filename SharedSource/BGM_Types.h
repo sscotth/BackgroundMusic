@@ -17,12 +17,18 @@
 //  BGM_Types.h
 //  SharedSource
 //
-//  Copyright © 2016 Kyle Neideck
+//  Copyright © 2016, 2017, 2019 Kyle Neideck
 //
 
 #ifndef SharedSource__BGM_Types
 #define SharedSource__BGM_Types
 
+// STL Includes
+#if defined(__cplusplus)
+#include <stdexcept>
+#endif
+
+// System Includes
 #include <CoreAudio/AudioServerPlugIn.h>
 
 
@@ -40,19 +46,45 @@ static const char* const kBGMIssueTrackerURL = "https://github.com/kyleneideck/B
 
 #define kBGMDeviceUID                "BGMDevice"
 #define kBGMDeviceModelUID           "BGMDeviceModelUID"
+#define kBGMDeviceUID_UISounds       "BGMDevice_UISounds"
+#define kBGMDeviceModelUID_UISounds  "BGMDeviceModelUID_UISounds"
+#define kBGMNullDeviceUID            "BGMNullDevice"
+#define kBGMNullDeviceModelUID       "BGMNullDeviceModelUID"
 
 // The object IDs for the audio objects this driver implements.
 //
-// BGMDevice always publishes this fixed set of objects (regardless of the wrapped device). We might need to
-// change that at some point, but so far it hasn't caused any problems and it makes the driver much simpler.
+// BGMDevice always publishes this fixed set of objects (except when BGMDevice's volume or mute
+// controls are disabled). We might need to change that at some point, but so far it hasn't caused
+// any problems and it makes the driver much simpler.
 enum
 {
-	kObjectID_PlugIn					= kAudioObjectPlugInObject,
-	kObjectID_Device					= 2,
-	kObjectID_Stream_Input				= 3,
-	kObjectID_Stream_Output				= 4,
-	kObjectID_Volume_Output_Master		= 5,
-	kObjectID_Mute_Output_Master		= 6
+	kObjectID_PlugIn                            = kAudioObjectPlugInObject,
+    // BGMDevice
+	kObjectID_Device                            = 2,   // Belongs to kObjectID_PlugIn
+	kObjectID_Stream_Input                      = 3,   // Belongs to kObjectID_Device
+	kObjectID_Stream_Output                     = 4,   // Belongs to kObjectID_Device
+	kObjectID_Volume_Output_Master              = 5,   // Belongs to kObjectID_Device
+	kObjectID_Mute_Output_Master                = 6,   // Belongs to kObjectID_Device
+    // Null Device
+    kObjectID_Device_Null                       = 7,   // Belongs to kObjectID_PlugIn
+    kObjectID_Stream_Null                       = 8,   // Belongs to kObjectID_Device_Null
+    // BGMDevice for UI sounds
+    kObjectID_Device_UI_Sounds                  = 9,   // Belongs to kObjectID_PlugIn
+    kObjectID_Stream_Input_UI_Sounds            = 10,  // Belongs to kObjectID_Device_UI_Sounds
+    kObjectID_Stream_Output_UI_Sounds           = 11,  // Belongs to kObjectID_Device_UI_Sounds
+    kObjectID_Volume_Output_Master_UI_Sounds    = 12,  // Belongs to kObjectID_Device_UI_Sounds
+};
+
+// AudioObjectPropertyElement docs: "Elements are numbered sequentially where 0 represents the
+// master element."
+static const AudioObjectPropertyElement kMasterChannel = kAudioObjectPropertyElementMaster;
+
+#pragma BGM Plug-in Custom Properties
+
+enum
+{
+    // A CFBoolean. True if the null device is enabled. Settable, false by default.
+    kAudioPlugInCustomPropertyNullDeviceActive = 'nuld'
 };
 
 #pragma mark BGMDevice Custom Properties
@@ -85,13 +117,16 @@ enum
     // Getting this property will only return apps with volumes other than the default. Setting this property
     // will add new app volumes or replace existing ones, but there's currently no way to delete an app from
     // the internal collection.
-    kAudioDeviceCustomPropertyAppVolumes                              = 'apvs'
+    kAudioDeviceCustomPropertyAppVolumes                              = 'apvs',
+    // A CFArray of CFBooleans indicating which of BGMDevice's controls are enabled. All controls are enabled
+    // by default. This property is settable. See the array indices below for more info.
+    kAudioDeviceCustomPropertyEnabledOutputControls                   = 'bgct'
 };
 
 // The number of silent/audible frames before BGMDriver will change kAudioDeviceCustomPropertyDeviceAudibleState
-#define kDeviceAudibleStateMinChangedFramesForUpdate (2 << 12)
+#define kDeviceAudibleStateMinChangedFramesForUpdate (2 << 11)
 
-enum
+enum BGMDeviceAudibleState : SInt32
 {
     // kAudioDeviceCustomPropertyDeviceAudibleState values
     //
@@ -129,6 +164,15 @@ enum
 #define kAppPanCenterRawValue 0
 #define kAppPanRightRawValue  100
 
+// kAudioDeviceCustomPropertyEnabledOutputControls indices
+enum
+{
+    // True if BGMDevice's master output volume control is enabled.
+    kBGMEnabledOutputControlsIndex_Volume = 0,
+    // True if BGMDevice's master output mute control is enabled.
+    kBGMEnabledOutputControlsIndex_Mute   = 1
+};
+
 #pragma mark BGMDevice Custom Property Addresses
 
 // For convenience.
@@ -163,6 +207,12 @@ static const AudioObjectPropertyAddress kBGMAppVolumesAddress = {
     kAudioObjectPropertyElementMaster
 };
 
+static const AudioObjectPropertyAddress kBGMEnabledOutputControlsAddress = {
+    kAudioDeviceCustomPropertyEnabledOutputControls,
+    kAudioObjectPropertyScopeOutput,
+    kAudioObjectPropertyElementMaster
+};
+
 #pragma mark XPC Return Codes
 
 enum {
@@ -171,7 +221,7 @@ enum {
     kBGMXPC_Timeout,
     kBGMXPC_BGMAppStateError,
     kBGMXPC_HardwareError,
-    kBGMXPC_HardwareNotStartingError,
+    kBGMXPC_ReturningEarlyError,
     kBGMXPC_InternalError
 };
 
@@ -179,12 +229,30 @@ enum {
 
 #if defined(__cplusplus)
 
-class BGM_InvalidClientException { };
-class BGM_InvalidClientPIDException { };
-class BGM_InvalidClientRelativeVolumeException { };
-class BGM_InvalidClientPanPositionException { };
-class BGM_DeviceNotSetException { };
-class BGM_RuntimeException { };
+class BGM_InvalidClientException : public std::runtime_error {
+public:
+    BGM_InvalidClientException() : std::runtime_error("InvalidClient") { }
+};
+
+class BGM_InvalidClientPIDException : public std::runtime_error {
+public:
+    BGM_InvalidClientPIDException() : std::runtime_error("InvalidClientPID") { }
+};
+
+class BGM_InvalidClientRelativeVolumeException : public std::runtime_error {
+public:
+    BGM_InvalidClientRelativeVolumeException() : std::runtime_error("InvalidClientRelativeVolume") { }
+};
+
+class BGM_InvalidClientPanPositionException : public std::runtime_error {
+public:
+    BGM_InvalidClientPanPositionException() : std::runtime_error("InvalidClientPanPosition") { }
+};
+
+class BGM_DeviceNotSetException : public std::runtime_error {
+public:
+    BGM_DeviceNotSetException() : std::runtime_error("DeviceNotSet") { }
+};
 
 #endif
 

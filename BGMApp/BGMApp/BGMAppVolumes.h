@@ -17,19 +17,32 @@
 //  BGMAppVolumes.h
 //  BGMApp
 //
-//  Copyright © 2016 Kyle Neideck
+//  Copyright © 2016, 2017 Kyle Neideck
 //
 
 // Local Includes
-#import "BGMAudioDeviceManager.h"
+#import "BGMAppVolumesController.h"
 
 // System Includes
 #import <Cocoa/Cocoa.h>
 
 
+#pragma clang assume_nonnull begin
+
 @interface BGMAppVolumes : NSObject
 
-- (id) initWithMenu:(NSMenu*)menu appVolumeView:(NSView*)view audioDevices:(BGMAudioDeviceManager*)audioDevices;
+- (id) initWithController:(BGMAppVolumesController*)inController
+                  bgmMenu:(NSMenu*)inMenu
+            appVolumeView:(NSView*)inView;
+
+// Pass -1 for initialVolume or initialPan to leave the volume/pan at its default level.
+- (void) insertMenuItemForApp:(NSRunningApplication*)app
+                initialVolume:(int)volume
+                   initialPan:(int)pan;
+
+- (void) removeMenuItemForApp:(NSRunningApplication*)app;
+
+- (void) removeAllAppVolumeMenuItems;
 
 @end
 
@@ -37,7 +50,10 @@
 
 @protocol BGMAppVolumeMenuItemSubview <NSObject>
 
-- (void) setUpWithApp:(NSRunningApplication*)app context:(BGMAppVolumes*)ctx menuItem:(NSMenuItem*)item;
+- (void) setUpWithApp:(NSRunningApplication*)app
+              context:(BGMAppVolumes*)ctx
+           controller:(BGMAppVolumesController*)ctrl
+             menuItem:(NSMenuItem*)item;
 
 @end
 
@@ -54,13 +70,16 @@
 
 @interface BGMAVM_VolumeSlider : NSSlider <BGMAppVolumeMenuItemSubview>
 
-- (void) setRelativeVolume:(NSNumber*)relativeVolume;
+- (void) setRelativeVolume:(int)relativeVolume;
 
 @end
 
 @interface BGMAVM_PanSlider : NSSlider <BGMAppVolumeMenuItemSubview>
 
-- (void) setPanPosition:(NSNumber*)panPosition;
+- (void) setPanPosition:(int)panPosition;
 
 @end
+
+#pragma clang assume_nonnull end
+
 

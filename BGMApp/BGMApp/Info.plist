@@ -17,7 +17,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>0.4.0</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
 	<key>CFBundleVersion</key>
@@ -28,11 +28,23 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Background Music needs to control your music player app if you want it to automatically pause your music.</string>
+	<key>NSAppleScriptEnabled</key>
+	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>Copyright © 2016, 2017 Background Music contributors</string>
+	<string>Copyright © 2016-2020 Background Music contributors</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>The &quot;Background Music&quot; virtual audio device sends system audio to Background Music (the app) through a virtual input device.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSServices</key>
+	<array>
+		<dict/>
+	</array>
+	<key>OSAScriptingDefinition</key>
+	<string>BGMApp.sdef</string>
 </dict>
 </plist>

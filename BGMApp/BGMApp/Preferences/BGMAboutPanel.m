@@ -27,8 +27,6 @@
 #import "BGM_Types.h"
 
 // PublicUtility Includes
-#undef CoreAudio_ThreadStampMessages
-#define CoreAudio_ThreadStampMessages 0  // Requires C++
 #include "CADebugMacros.h"
 
 
@@ -93,10 +91,11 @@ static NSInteger const kProjectWebsiteLabelTag = 3;
         websiteLabel.allowsEditingTextAttributes = YES;
         
         NSString* projectURL = [NSString stringWithUTF8String:kBGMProjectURL];
+        NSFont* linkFont = websiteLabel.font ? websiteLabel.font : [NSFont labelFontOfSize:0.0];
         websiteLabel.attributedStringValue =
             [[NSAttributedString alloc] initWithString:projectURL
                                             attributes:@{ NSLinkAttributeName: projectURL,
-                                                          NSFontAttributeName: websiteLabel.font }];
+                                                          NSFontAttributeName: linkFont }];
         
         // Load the text of the license into the text view
         NSString* __nullable licensePath = [bundle pathForResource:@"LICENSE" ofType:nil];
@@ -112,7 +111,7 @@ static NSInteger const kProjectWebsiteLabelTag = 3;
             licenseStr = @"Error: could not open license file.";
         }
         
-        licenseView.string = licenseStr;
+        licenseView.string = (NSString*)licenseStr;
         
         NSFont* __nullable font = [NSFont fontWithName:@"Andale Mono" size:0.0];
         if (font) {

@@ -17,8 +17,8 @@
 //  BGM_PlugInInterface.cpp
 //  BGMDriver
 //
-//  Copyright © 2016 Kyle Neideck
-//  Portions copyright (C) 2013 Apple Inc. All Rights Reserved.
+//  Copyright © 2016, 2017 Kyle Neideck
+//  Copyright (C) 2013 Apple Inc. All Rights Reserved.
 //
 //  Based largely on SA_PlugIn.cpp from Apple's SimpleAudioDriver Plug-In sample code.
 //  https://developer.apple.com/library/mac/samplecode/AudioDriverExamples
@@ -36,6 +36,7 @@
 #include "BGM_Object.h"
 #include "BGM_PlugIn.h"
 #include "BGM_Device.h"
+#include "BGM_NullDevice.h"
 
 
 #pragma mark COM Prototypes
@@ -97,6 +98,7 @@ static AudioServerPlugInDriverInterface*	gAudioServerPlugInDriverInterfacePtr	= 
 static AudioServerPlugInDriverRef			gAudioServerPlugInDriverRef				= &gAudioServerPlugInDriverInterfacePtr;
 static UInt32								gAudioServerPlugInDriverRefCount		= 1;
 
+// TODO: This name is a bit misleading because the devices are actually owned by the plug-in.
 static BGM_Object& BGM_LookUpOwnerObject(AudioObjectID inObjectID)
 {
     switch(inObjectID)
@@ -110,10 +112,38 @@ static BGM_Object& BGM_LookUpOwnerObject(AudioObjectID inObjectID)
         case kObjectID_Volume_Output_Master:
         case kObjectID_Mute_Output_Master:
             return BGM_Device::GetInstance();
+
+        case kObjectID_Device_UI_Sounds:
+        case kObjectID_Stream_Input_UI_Sounds:
+        case kObjectID_Stream_Output_UI_Sounds:
+        case kObjectID_Volume_Output_Master_UI_Sounds:
+            return BGM_Device::GetUISoundsInstance();
+
+        case kObjectID_Device_Null:
+        case kObjectID_Stream_Null:
+            return BGM_NullDevice::GetInstance();
     }
     
     DebugMsg("BGM_LookUpOwnerObject: unknown object");
     Throw(CAException(kAudioHardwareBadObjectError));
+}
+
+static BGM_AbstractDevice& BGM_LookUpDevice(AudioObjectID inObjectID)
+{
+    switch(inObjectID)
+    {
+        case kObjectID_Device:
+            return BGM_Device::GetInstance();
+
+        case kObjectID_Device_UI_Sounds:
+            return BGM_Device::GetUISoundsInstance();
+
+        case kObjectID_Device_Null:
+            return BGM_NullDevice::GetInstance();
+    }
+
+    DebugMsg("BGM_LookUpDevice: unknown device");
+    Throw(CAException(kAudioHardwareBadDeviceError));
 }
 
 #pragma mark Factory
@@ -246,14 +276,18 @@ static OSStatus	BGM_Initialize(AudioServerPlugInDriverRef inDriver, AudioServerP
 	
 	try
 	{
-		//	check the arguments
-		ThrowIf(inDriver != gAudioServerPlugInDriverRef, CAException(kAudioHardwareBadObjectError), "BGM_Initialize: bad driver reference");
+		// Check the arguments.
+		ThrowIf(inDriver != gAudioServerPlugInDriverRef,
+                CAException(kAudioHardwareBadObjectError),
+                "BGM_Initialize: bad driver reference");
 		
-		//	store the AudioServerPlugInHostRef
+		// Store the AudioServerPlugInHostRef.
 		BGM_PlugIn::GetInstance().SetHost(inHost);
         
-        // Init/activate the device
+        // Init/activate the devices.
         BGM_Device::GetInstance();
+        BGM_Device::GetUISoundsInstance();
+        BGM_NullDevice::GetInstance();
 	}
 	catch(const CAException& inException)
 	{
@@ -298,12 +332,16 @@ static OSStatus	BGM_AddDeviceClient(AudioServerPlugInDriverRef inDriver, AudioOb
 	
 	try
 	{
-		//	check the arguments
-		ThrowIf(inDriver != gAudioServerPlugInDriverRef, CAException(kAudioHardwareBadObjectError), "BGM_AddDeviceClient: bad driver reference");
-		ThrowIf(inDeviceObjectID != kObjectID_Device, CAException(kAudioHardwareBadObjectError), "BGM_AddDeviceClient: unknown device");
+		// Check the arguments.
+		ThrowIf(inDriver != gAudioServerPlugInDriverRef,
+                CAException(kAudioHardwareBadObjectError),
+                "BGM_AddDeviceClient: bad driver reference");
+		ThrowIf(inDeviceObjectID != kObjectID_Device && inDeviceObjectID != kObjectID_Device_UI_Sounds && inDeviceObjectID != kObjectID_Device_Null,
+                CAException(kAudioHardwareBadObjectError),
+                "BGM_AddDeviceClient: unknown device");
 		
-		//	inform the device
-        BGM_Device::GetInstance().AddClient(inClientInfo);
+		// Inform the device.
+        BGM_LookUpDevice(inDeviceObjectID).AddClient(inClientInfo);
 	}
 	catch(const CAException& inException)
 	{
@@ -330,12 +368,16 @@ static OSStatus	BGM_RemoveDeviceClient(AudioServerPlugInDriverRef inDriver, Audi
 	
 	try
 	{
-		//	check the arguments
-		ThrowIf(inDriver != gAudioServerPlugInDriverRef, CAException(kAudioHardwareBadObjectError), "BGM_RemoveDeviceClient: bad driver reference");
-		ThrowIf(inDeviceObjectID != kObjectID_Device, CAException(kAudioHardwareBadObjectError), "BGM_RemoveDeviceClient: unknown device");
+		// Check the arguments.
+		ThrowIf(inDriver != gAudioServerPlugInDriverRef,
+                CAException(kAudioHardwareBadObjectError),
+                "BGM_RemoveDeviceClient: bad driver reference");
+		ThrowIf(inDeviceObjectID != kObjectID_Device && inDeviceObjectID != kObjectID_Device_UI_Sounds && inDeviceObjectID != kObjectID_Device_Null,
+                CAException(kAudioHardwareBadObjectError),
+                "BGM_RemoveDeviceClient: unknown device");
 		
-		//	inform the device
-        BGM_Device::GetInstance().RemoveClient(inClientInfo);
+        // Inform the device.
+        BGM_LookUpDevice(inDeviceObjectID).RemoveClient(inClientInfo);
 	}
 	catch(const CAException& inException)
 	{
@@ -364,17 +406,21 @@ static OSStatus	BGM_PerformDeviceConfigurationChange(AudioServerPlugInDriverRef 
 	//	also handle figuring out exactly what changed for the non-control related properties. This
 	//	means that the only notifications that would need to be sent here would be for either
 	//	custom properties the HAL doesn't know about or for controls.
-	
+
 	OSStatus theAnswer = 0;
 	
 	try
 	{
 		//	check the arguments
-		ThrowIf(inDriver != gAudioServerPlugInDriverRef, CAException(kAudioHardwareBadObjectError), "BGM_PerformDeviceConfigurationChange: bad driver reference");
-		ThrowIf(inDeviceObjectID != kObjectID_Device, CAException(kAudioHardwareBadObjectError), "BGM_PerformDeviceConfigurationChange: unknown device");
+		ThrowIf(inDriver != gAudioServerPlugInDriverRef,
+                CAException(kAudioHardwareBadObjectError),
+                "BGM_PerformDeviceConfigurationChange: bad driver reference");
+		ThrowIf(inDeviceObjectID != kObjectID_Device && inDeviceObjectID != kObjectID_Device_UI_Sounds && inDeviceObjectID != kObjectID_Device_Null,
+                CAException(kAudioHardwareBadDeviceError),
+                "BGM_PerformDeviceConfigurationChange: unknown device");
 		
 		//	tell the device to do the work
-		BGM_Device::GetInstance().PerformConfigChange(inChangeAction, inChangeInfo);
+		BGM_LookUpDevice(inDeviceObjectID).PerformConfigChange(inChangeAction, inChangeInfo);
 	}
 	catch(const CAException& inException)
 	{
@@ -398,11 +444,15 @@ static OSStatus	BGM_AbortDeviceConfigurationChange(AudioServerPlugInDriverRef in
 	try
 	{
 		//	check the arguments
-		ThrowIf(inDriver != gAudioServerPlugInDriverRef, CAException(kAudioHardwareBadObjectError), "BGM_PerformDeviceConfigurationChange: bad driver reference");
-		ThrowIf(inDeviceObjectID != kObjectID_Device, CAException(kAudioHardwareBadObjectError), "BGM_PerformDeviceConfigurationChange: unknown device");
+		ThrowIf(inDriver != gAudioServerPlugInDriverRef,
+                CAException(kAudioHardwareBadObjectError),
+                "BGM_PerformDeviceConfigurationChange: bad driver reference");
+		ThrowIf(inDeviceObjectID != kObjectID_Device && inDeviceObjectID != kObjectID_Device_UI_Sounds && inDeviceObjectID != kObjectID_Device_Null,
+                CAException(kAudioHardwareBadDeviceError),
+                "BGM_PerformDeviceConfigurationChange: unknown device");
 		
 		//	tell the device to do the work
-		BGM_Device::GetInstance().AbortConfigChange(inChangeAction, inChangeInfo);
+		BGM_LookUpDevice(inDeviceObjectID).AbortConfigChange(inChangeAction, inChangeInfo);
 	}
 	catch(const CAException& inException)
 	{
@@ -438,6 +488,9 @@ static Boolean	BGM_HasProperty(AudioServerPlugInDriverRef inDriver, AudioObjectI
 	}
 	catch(...)
 	{
+		LogError("BGM_PlugInInterface::BGM_HasProperty: unknown exception. (object: %u, address: %u)",
+				 inObjectID,
+				 inAddress ? inAddress->mSelector : 0);
 		theAnswer = false;
 	}
 
@@ -474,6 +527,9 @@ static OSStatus	BGM_IsPropertySettable(AudioServerPlugInDriverRef inDriver, Audi
 	}
 	catch(...)
 	{
+		LogError("BGM_PlugInInterface::BGM_IsPropertySettable: unknown exception. (object: %u, address: %u)",
+				 inObjectID,
+				 inAddress ? inAddress->mSelector : 0);
 		theAnswer = kAudioHardwareUnspecifiedError;
 	}
 	
@@ -509,6 +565,9 @@ static OSStatus	BGM_GetPropertyDataSize(AudioServerPlugInDriverRef inDriver, Aud
 	}
 	catch(...)
 	{
+		LogError("BGM_PlugInInterface::BGM_GetPropertyDataSize: unknown exception. (object: %u, address: %u)",
+				 inObjectID,
+				 inAddress ? inAddress->mSelector : 0);
 		theAnswer = kAudioHardwareUnspecifiedError;
 	}
 
@@ -545,6 +604,9 @@ static OSStatus	BGM_GetPropertyData(AudioServerPlugInDriverRef inDriver, AudioOb
 	}
 	catch(...)
 	{
+		LogError("BGM_PlugInInterface::BGM_GetPropertyData: unknown exception. (object: %u, address: %u)",
+                 inObjectID,
+				 inAddress ? inAddress->mSelector : 0);
 		theAnswer = kAudioHardwareUnspecifiedError;
 	}
 
@@ -556,7 +618,7 @@ static OSStatus	BGM_SetPropertyData(AudioServerPlugInDriverRef inDriver, AudioOb
 	//	This method changes the value of the given property
 
 	OSStatus theAnswer = 0;
-	
+
 	try
 	{
 		//	check the arguments
@@ -587,6 +649,9 @@ static OSStatus	BGM_SetPropertyData(AudioServerPlugInDriverRef inDriver, AudioOb
 	}
 	catch(...)
 	{
+		LogError("BGM_PlugInInterface::BGM_SetPropertyData: unknown exception. (object: %u, address: %u)",
+				 inObjectID,
+				 inAddress ? inAddress->mSelector : 0);
 		theAnswer = kAudioHardwareUnspecifiedError;
 	}
 	
@@ -595,7 +660,9 @@ static OSStatus	BGM_SetPropertyData(AudioServerPlugInDriverRef inDriver, AudioOb
 
 #pragma mark IO Operations
 
-static OSStatus	BGM_StartIO(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, UInt32 inClientID)
+static OSStatus	BGM_StartIO(AudioServerPlugInDriverRef inDriver,
+                            AudioObjectID inDeviceObjectID,
+                            UInt32 inClientID)
 {
 	//	This call tells the device that IO is starting for the given client. When this routine
 	//	returns, the device's clock is running and it is ready to have data read/written. It is
@@ -608,11 +675,15 @@ static OSStatus	BGM_StartIO(AudioServerPlugInDriverRef inDriver, AudioObjectID i
 	try
 	{
 		//	check the arguments
-		ThrowIf(inDriver != gAudioServerPlugInDriverRef, CAException(kAudioHardwareBadObjectError), "BGM_StartIO: bad driver reference");
-		ThrowIf(inDeviceObjectID != kObjectID_Device, CAException(kAudioHardwareBadObjectError), "BGM_StartIO: unknown device");
+		ThrowIf(inDriver != gAudioServerPlugInDriverRef,
+                CAException(kAudioHardwareBadObjectError),
+                "BGM_StartIO: bad driver reference");
+		ThrowIf(inDeviceObjectID != kObjectID_Device && inDeviceObjectID != kObjectID_Device_UI_Sounds && inDeviceObjectID != kObjectID_Device_Null,
+                CAException(kAudioHardwareBadDeviceError),
+                "BGM_StartIO: unknown device");
 		
 		//	tell the device to do the work
-        BGM_Device::GetInstance().StartIO(inClientID);
+        BGM_LookUpDevice(inDeviceObjectID).StartIO(inClientID);
 	}
 	catch(const CAException& inException)
 	{
@@ -626,7 +697,9 @@ static OSStatus	BGM_StartIO(AudioServerPlugInDriverRef inDriver, AudioObjectID i
 	return theAnswer;
 }
 
-static OSStatus	BGM_StopIO(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, UInt32 inClientID)
+static OSStatus	BGM_StopIO(AudioServerPlugInDriverRef inDriver,
+                           AudioObjectID inDeviceObjectID,
+                           UInt32 inClientID)
 {
 	//	This call tells the device that the client has stopped IO. The driver can stop the hardware
 	//	once all clients have stopped.
@@ -636,11 +709,15 @@ static OSStatus	BGM_StopIO(AudioServerPlugInDriverRef inDriver, AudioObjectID in
 	try
 	{
 		//	check the arguments
-		ThrowIf(inDriver != gAudioServerPlugInDriverRef, CAException(kAudioHardwareBadObjectError), "BGM_StopIO: bad driver reference");
-		ThrowIf(inDeviceObjectID != kObjectID_Device, CAException(kAudioHardwareBadObjectError), "BGM_StopIO: unknown device");
+		ThrowIf(inDriver != gAudioServerPlugInDriverRef,
+                CAException(kAudioHardwareBadObjectError),
+                "BGM_StopIO: bad driver reference");
+		ThrowIf(inDeviceObjectID != kObjectID_Device && inDeviceObjectID != kObjectID_Device_UI_Sounds && inDeviceObjectID != kObjectID_Device_Null,
+                CAException(kAudioHardwareBadDeviceError),
+                "BGM_StopIO: unknown device");
 		
 		//	tell the device to do the work
-		BGM_Device::GetInstance().StopIO(inClientID);
+		BGM_LookUpDevice(inDeviceObjectID).StopIO(inClientID);
 	}
 	catch(const CAException& inException)
 	{
@@ -654,29 +731,43 @@ static OSStatus	BGM_StopIO(AudioServerPlugInDriverRef inDriver, AudioObjectID in
 	return theAnswer;
 }
 
-static OSStatus	BGM_GetZeroTimeStamp(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, UInt32 inClientID, Float64* outSampleTime, UInt64* outHostTime, UInt64* outSeed)
+static OSStatus	BGM_GetZeroTimeStamp(AudioServerPlugInDriverRef inDriver,
+                                     AudioObjectID inDeviceObjectID,
+                                     UInt32 inClientID,
+                                     Float64* outSampleTime,
+                                     UInt64* outHostTime,
+                                     UInt64* outSeed)
 {
+    #pragma unused(inClientID)
 	//	This method returns the current zero time stamp for the device. The HAL models the timing of
 	//	a device as a series of time stamps that relate the sample time to a host time. The zero
 	//	time stamps are spaced such that the sample times are the value of
 	//	kAudioDevicePropertyZeroTimeStampPeriod apart. This is often modeled using a ring buffer
 	//	where the zero time stamp is updated when wrapping around the ring buffer.
-	
-	#pragma unused(inClientID)
-	
+
 	OSStatus theAnswer = 0;
 	
 	try
 	{
 		//	check the arguments
-		ThrowIf(inDriver != gAudioServerPlugInDriverRef, CAException(kAudioHardwareBadObjectError), "BGM_GetZeroTimeStamp: bad driver reference");
-		ThrowIfNULL(outSampleTime, CAException(kAudioHardwareIllegalOperationError), "BGM_GetZeroTimeStamp: no place to put the sample time");
-		ThrowIfNULL(outHostTime, CAException(kAudioHardwareIllegalOperationError), "BGM_GetZeroTimeStamp: no place to put the host time");
-		ThrowIfNULL(outSeed, CAException(kAudioHardwareIllegalOperationError), "BGM_GetZeroTimeStamp: no place to put the seed");
-		ThrowIf(inDeviceObjectID != kObjectID_Device, CAException(kAudioHardwareBadObjectError), "BGM_GetZeroTimeStamp: unknown device");
+		ThrowIf(inDriver != gAudioServerPlugInDriverRef,
+                CAException(kAudioHardwareBadObjectError),
+                "BGM_GetZeroTimeStamp: bad driver reference");
+		ThrowIfNULL(outSampleTime,
+                    CAException(kAudioHardwareIllegalOperationError),
+                    "BGM_GetZeroTimeStamp: no place to put the sample time");
+		ThrowIfNULL(outHostTime,
+                    CAException(kAudioHardwareIllegalOperationError),
+                    "BGM_GetZeroTimeStamp: no place to put the host time");
+		ThrowIfNULL(outSeed,
+                    CAException(kAudioHardwareIllegalOperationError),
+                    "BGM_GetZeroTimeStamp: no place to put the seed");
+		ThrowIf(inDeviceObjectID != kObjectID_Device && inDeviceObjectID != kObjectID_Device_UI_Sounds && inDeviceObjectID != kObjectID_Device_Null,
+                CAException(kAudioHardwareBadDeviceError),
+                "BGM_GetZeroTimeStamp: unknown device");
 		
 		//	tell the device to do the work
-		BGM_Device::GetInstance().GetZeroTimeStamp(*outSampleTime, *outHostTime, *outSeed);
+		BGM_LookUpDevice(inDeviceObjectID).GetZeroTimeStamp(*outSampleTime, *outHostTime, *outSeed);
 	}
 	catch(const CAException& inException)
 	{
@@ -690,26 +781,38 @@ static OSStatus	BGM_GetZeroTimeStamp(AudioServerPlugInDriverRef inDriver, AudioO
 	return theAnswer;
 }
 
-static OSStatus	BGM_WillDoIOOperation(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, UInt32 inClientID, UInt32 inOperationID, Boolean* outWillDo, Boolean* outWillDoInPlace)
+static OSStatus	BGM_WillDoIOOperation(AudioServerPlugInDriverRef inDriver,
+                                      AudioObjectID inDeviceObjectID,
+                                      UInt32 inClientID,
+                                      UInt32 inOperationID,
+                                      Boolean* outWillDo,
+                                      Boolean* outWillDoInPlace)
 {
-	//	This method returns whether or not the device will do a given IO operation.
-	
 	#pragma unused(inClientID)
-	
+	//	This method returns whether or not the device will do a given IO operation.
+
 	OSStatus theAnswer = 0;
 	
 	try
 	{
 		//	check the arguments
-		ThrowIf(inDriver != gAudioServerPlugInDriverRef, CAException(kAudioHardwareBadObjectError), "BGM_WillDoIOOperation: bad driver reference");
-		ThrowIfNULL(outWillDo, CAException(kAudioHardwareIllegalOperationError), "BGM_WillDoIOOperation: no place to put the will-do return value");
-		ThrowIfNULL(outWillDoInPlace, CAException(kAudioHardwareIllegalOperationError), "BGM_WillDoIOOperation: no place to put the in-place return value");
-		ThrowIf(inDeviceObjectID != kObjectID_Device, CAException(kAudioHardwareBadObjectError), "BGM_WillDoIOOperation: unknown device");
+		ThrowIf(inDriver != gAudioServerPlugInDriverRef,
+                CAException(kAudioHardwareBadObjectError),
+                "BGM_WillDoIOOperation: bad driver reference");
+		ThrowIfNULL(outWillDo,
+                    CAException(kAudioHardwareIllegalOperationError),
+                    "BGM_WillDoIOOperation: no place to put the will-do return value");
+		ThrowIfNULL(outWillDoInPlace,
+                    CAException(kAudioHardwareIllegalOperationError),
+                    "BGM_WillDoIOOperation: no place to put the in-place return value");
+		ThrowIf(inDeviceObjectID != kObjectID_Device && inDeviceObjectID != kObjectID_Device_UI_Sounds && inDeviceObjectID != kObjectID_Device_Null,
+                CAException(kAudioHardwareBadDeviceError),
+                "BGM_WillDoIOOperation: unknown device");
 		
 		//	tell the device to do the work
 		bool willDo = false;
 		bool willDoInPlace = false;
-		BGM_Device::GetInstance().WillDoIOOperation(inOperationID, willDo, willDoInPlace);
+		BGM_LookUpDevice(inDeviceObjectID).WillDoIOOperation(inOperationID, willDo, willDoInPlace);
 		
 		//	set the return values
 		*outWillDo = willDo;
@@ -727,7 +830,12 @@ static OSStatus	BGM_WillDoIOOperation(AudioServerPlugInDriverRef inDriver, Audio
 	return theAnswer;
 }
 
-static OSStatus	BGM_BeginIOOperation(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, UInt32 inClientID, UInt32 inOperationID, UInt32 inIOBufferFrameSize, const AudioServerPlugInIOCycleInfo* inIOCycleInfo)
+static OSStatus	BGM_BeginIOOperation(AudioServerPlugInDriverRef inDriver,
+                                     AudioObjectID inDeviceObjectID,
+                                     UInt32 inClientID,
+                                     UInt32 inOperationID,
+                                     UInt32 inIOBufferFrameSize,
+                                     const AudioServerPlugInIOCycleInfo* inIOCycleInfo)
 {
 	// This is called at the beginning of an IO operation.
 	
@@ -736,12 +844,21 @@ static OSStatus	BGM_BeginIOOperation(AudioServerPlugInDriverRef inDriver, AudioO
 	try
 	{
 		//	check the arguments
-		ThrowIf(inDriver != gAudioServerPlugInDriverRef, CAException(kAudioHardwareBadObjectError), "BGM_BeginIOOperation: bad driver reference");
-		ThrowIfNULL(inIOCycleInfo, CAException(kAudioHardwareIllegalOperationError), "BGM_BeginIOOperation: no cycle info");
-		ThrowIf(inDeviceObjectID != kObjectID_Device, CAException(kAudioHardwareBadObjectError), "BGM_BeginIOOperation: unknown device");
+		ThrowIf(inDriver != gAudioServerPlugInDriverRef,
+                CAException(kAudioHardwareBadObjectError),
+                "BGM_BeginIOOperation: bad driver reference");
+		ThrowIfNULL(inIOCycleInfo,
+                    CAException(kAudioHardwareIllegalOperationError),
+                    "BGM_BeginIOOperation: no cycle info");
+		ThrowIf(inDeviceObjectID != kObjectID_Device && inDeviceObjectID != kObjectID_Device_UI_Sounds && inDeviceObjectID != kObjectID_Device_Null,
+                CAException(kAudioHardwareBadDeviceError),
+                "BGM_BeginIOOperation: unknown device");
 		
 		//	tell the device to do the work
-		BGM_Device::GetInstance().BeginIOOperation(inOperationID, inIOBufferFrameSize, *inIOCycleInfo, inClientID);
+		BGM_LookUpDevice(inDeviceObjectID).BeginIOOperation(inOperationID,
+                                                            inIOBufferFrameSize,
+                                                            *inIOCycleInfo,
+                                                            inClientID);
 	}
 	catch(const CAException& inException)
 	{
@@ -749,27 +866,50 @@ static OSStatus	BGM_BeginIOOperation(AudioServerPlugInDriverRef inDriver, AudioO
 	}
 	catch(...)
 	{
+		DebugMsg("BGM_PlugInInterface::BGM_BeginIOOperation: unknown exception. (device: %s, operation: %u)",
+				 (inDeviceObjectID == kObjectID_Device ? "BGMDevice" : "other"),
+				 inOperationID);
 		theAnswer = kAudioHardwareUnspecifiedError;
 	}
 	
 	return theAnswer;
 }
 
-static OSStatus	BGM_DoIOOperation(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, AudioObjectID inStreamObjectID, UInt32 inClientID, UInt32 inOperationID, UInt32 inIOBufferFrameSize, const AudioServerPlugInIOCycleInfo* inIOCycleInfo, void* ioMainBuffer, void* ioSecondaryBuffer)
+static OSStatus	BGM_DoIOOperation(AudioServerPlugInDriverRef inDriver,
+                                  AudioObjectID inDeviceObjectID,
+                                  AudioObjectID inStreamObjectID,
+                                  UInt32 inClientID,
+                                  UInt32 inOperationID,
+                                  UInt32 inIOBufferFrameSize,
+                                  const AudioServerPlugInIOCycleInfo* inIOCycleInfo,
+                                  void* ioMainBuffer,
+                                  void* ioSecondaryBuffer)
 {
-	//	This is called to actually perform a given operation.
+	//	This is called to actually perform a given IO operation.
 	
 	OSStatus theAnswer = 0;
 	
 	try
 	{
 		//	check the arguments
-		ThrowIf(inDriver != gAudioServerPlugInDriverRef, CAException(kAudioHardwareBadObjectError), "BGM_EndIOOperation: bad driver reference");
-		ThrowIfNULL(inIOCycleInfo, CAException(kAudioHardwareIllegalOperationError), "BGM_EndIOOperation: no cycle info");
-		ThrowIf(inDeviceObjectID != kObjectID_Device, CAException(kAudioHardwareBadObjectError), "BGM_EndIOOperation: unknown device");
+		ThrowIf(inDriver != gAudioServerPlugInDriverRef,
+                CAException(kAudioHardwareBadObjectError),
+                "BGM_EndIOOperation: bad driver reference");
+		ThrowIfNULL(inIOCycleInfo,
+                    CAException(kAudioHardwareIllegalOperationError),
+                    "BGM_EndIOOperation: no cycle info");
+		ThrowIf(inDeviceObjectID != kObjectID_Device && inDeviceObjectID != kObjectID_Device_UI_Sounds && inDeviceObjectID != kObjectID_Device_Null,
+                CAException(kAudioHardwareBadDeviceError),
+                "BGM_EndIOOperation: unknown device");
 		
 		//	tell the device to do the work
-		BGM_Device::GetInstance().DoIOOperation(inStreamObjectID, inClientID, inOperationID, inIOBufferFrameSize, *inIOCycleInfo, ioMainBuffer, ioSecondaryBuffer);
+		BGM_LookUpDevice(inDeviceObjectID).DoIOOperation(inStreamObjectID,
+                                                         inClientID,
+                                                         inOperationID,
+                                                         inIOBufferFrameSize,
+                                                         *inIOCycleInfo,
+                                                         ioMainBuffer,
+                                                         ioSecondaryBuffer);
 	}
 	catch(const CAException& inException)
 	{
@@ -777,13 +917,21 @@ static OSStatus	BGM_DoIOOperation(AudioServerPlugInDriverRef inDriver, AudioObje
 	}
 	catch(...)
 	{
+		DebugMsg("BGM_PlugInInterface::BGM_DoIOOperation: unknown exception. (device: %s, operation: %u)",
+				 (inDeviceObjectID == kObjectID_Device ? "BGMDevice" : "other"),
+				 inOperationID);
 		theAnswer = kAudioHardwareUnspecifiedError;
 	}
 
 	return theAnswer;
 }
 
-static OSStatus	BGM_EndIOOperation(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, UInt32 inClientID, UInt32 inOperationID, UInt32 inIOBufferFrameSize, const AudioServerPlugInIOCycleInfo* inIOCycleInfo)
+static OSStatus	BGM_EndIOOperation(AudioServerPlugInDriverRef inDriver,
+                                   AudioObjectID inDeviceObjectID,
+                                   UInt32 inClientID,
+                                   UInt32 inOperationID,
+                                   UInt32 inIOBufferFrameSize,
+                                   const AudioServerPlugInIOCycleInfo* inIOCycleInfo)
 {
 	// This is called at the end of an IO operation.
 	
@@ -792,12 +940,21 @@ static OSStatus	BGM_EndIOOperation(AudioServerPlugInDriverRef inDriver, AudioObj
 	try
 	{
 		//	check the arguments
-		ThrowIf(inDriver != gAudioServerPlugInDriverRef, CAException(kAudioHardwareBadObjectError), "BGM_EndIOOperation: bad driver reference");
-		ThrowIfNULL(inIOCycleInfo, CAException(kAudioHardwareIllegalOperationError), "BGM_EndIOOperation: no cycle info");
-		ThrowIf(inDeviceObjectID != kObjectID_Device, CAException(kAudioHardwareBadObjectError), "BGM_EndIOOperation: unknown device");
+		ThrowIf(inDriver != gAudioServerPlugInDriverRef,
+                CAException(kAudioHardwareBadObjectError),
+                "BGM_EndIOOperation: bad driver reference");
+		ThrowIfNULL(inIOCycleInfo,
+                    CAException(kAudioHardwareIllegalOperationError),
+                    "BGM_EndIOOperation: no cycle info");
+		ThrowIf(inDeviceObjectID != kObjectID_Device && inDeviceObjectID != kObjectID_Device_UI_Sounds && inDeviceObjectID != kObjectID_Device_Null,
+                CAException(kAudioHardwareBadDeviceError),
+                "BGM_EndIOOperation: unknown device");
 		
 		//	tell the device to do the work
-		BGM_Device::GetInstance().EndIOOperation(inOperationID, inIOBufferFrameSize, *inIOCycleInfo, inClientID);
+		BGM_LookUpDevice(inDeviceObjectID).EndIOOperation(inOperationID,
+                                                          inIOBufferFrameSize,
+                                                          *inIOCycleInfo,
+                                                          inClientID);
 	}
 	catch(const CAException& inException)
 	{
@@ -805,6 +962,9 @@ static OSStatus	BGM_EndIOOperation(AudioServerPlugInDriverRef inDriver, AudioObj
 	}
 	catch(...)
 	{
+		DebugMsg("BGM_PlugInInterface::BGM_EndIOOperation: unknown exception. (device: %s, operation: %u)",
+				 (inDeviceObjectID == kObjectID_Device ? "BGMDevice" : "other"),
+				 inOperationID);
 		theAnswer = kAudioHardwareUnspecifiedError;
 	}
 	

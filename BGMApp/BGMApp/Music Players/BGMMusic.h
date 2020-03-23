@@ -14,25 +14,22 @@
 // along with Background Music. If not, see <http://www.gnu.org/licenses/>.
 
 //
-//  AppDelegate.h
+//  BGMMusic.h
 //  BGMApp
 //
-//  Copyright © 2016 Kyle Neideck
+//  Copyright © 2016, 2019 Kyle Neideck
+//  Copyright © 2019 theLMGN
 //
-//  Sets up and tears down the app.
-//
 
-// System Includes
-#import <Cocoa/Cocoa.h>
+// Superclass/Protocol Import
+#import "BGMMusicPlayer.h"
 
 
-@interface AppDelegate : NSObject <NSApplicationDelegate, NSMenuDelegate>
+#pragma clang assume_nonnull begin
 
-@property (weak) IBOutlet NSMenu* bgmMenu;
-@property (weak) IBOutlet NSView* appVolumeView;
-@property (weak) IBOutlet NSPanel* aboutPanel;
-@property (unsafe_unretained) IBOutlet NSTextView* aboutPanelLicenseView;
-@property (weak) IBOutlet NSMenuItem* autoPauseMenuItemUnwrapped;
+@interface BGMMusic : BGMMusicPlayerBase<BGMMusicPlayer>
 
 @end
+
+#pragma clang assume_nonnull end
 

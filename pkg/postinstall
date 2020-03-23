@@ -1,0 +1,124 @@
+#!/bin/bash
+# vim: tw=100:
+
+# This file is part of Background Music.
+#
+# Background Music is free software: you can redistribute it and/or
+# modify it under the terms of the GNU General Public License as
+# published by the Free Software Foundation, either version 2 of the
+# License, or (at your option) any later version.
+#
+# Background Music is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Background Music. If not, see <http://www.gnu.org/licenses/>.
+
+#
+# postinstall
+#
+# Copyright © 2017-2020 Kyle Neideck
+#
+
+# Make sure we use the built-in versions of programs, for consistency. Probably not necessary
+# because the installer will set $PATH in a similar way, but it doesn't hurt.
+PATH=/bin:/sbin:/usr/bin:/usr/sbin; export PATH
+
+function log {
+    logger "$@"
+    echo "$@"
+}
+
+coreaudiod_plist="/System/Library/LaunchDaemons/com.apple.audio.coreaudiod.plist"
+dest_volume="$3"
+xpc_helper_path="$(bash safe_install_dir.sh -y)"
+
+log "Installing BGMXPCHelper to $xpc_helper_path"
+cp -Rf "BGMXPCHelper.xpc" "$xpc_helper_path"
+
+# TODO: Fail the install and show an error message if this fails.
+bash "post_install.sh" "$xpc_helper_path" "BGMXPCHelper.xpc/Contents/MacOS/BGMXPCHelper" "."
+
+# TODO: Verify the installed files, their permissions, the _BGMXPCHelper user/group, etc.
+
+# The extra or-clauses are fallback versions of the command that restarts coreaudiod. Apparently
+# some of these commands don't work with older versions of launchctl, so I figure there's no
+# harm in trying a bunch of different ways (which should all work).
+(sudo launchctl kickstart -k system/com.apple.audio.coreaudiod &>/dev/null || \
+    launchctl kill SIGTERM system/com.apple.audio.coreaudiod &>/dev/null || \
+    launchctl kill TERM system/com.apple.audio.coreaudiod &>/dev/null || \
+    launchctl kill 15 system/com.apple.audio.coreaudiod &>/dev/null || \
+    launchctl kill -15 system/com.apple.audio.coreaudiod &>/dev/null || \
+    (launchctl unload "$coreaudiod_plist" &>/dev/null && \
+        launchctl load "$coreaudiod_plist" &>/dev/null) || \
+    killall coreaudiod &>/dev/null) && \
+    sleep 2
+
+# Wait until coreaudiod has restarted and BGMDevice is ready to use.
+retries=5
+while [[ $retries -gt 0 ]]; do
+    if ! system_profiler SPAudioDataType | grep "Background Music" >/dev/null 2>&1; then
+        retries=$((retries - 1))
+        if [[ $retries -gt 0 ]]; then
+            log "Background Music device not found. Trying again in 3 seconds..."
+            sleep 3
+        else
+            # TODO: We might be able to use <installation-check> to show error messages in the
+            #       installer GUI instead of just logging them. See
+            #       <https://developer.apple.com/library/archive/documentation/DeveloperTools/Reference/DistributionDefinitionRef/Chapters/Distribution_XML_Ref.html#//apple_ref/doc/uid/TP40005370-CH100-SW12>.
+            log "Background Music device not found. Installation failed."
+            exit 1
+        fi
+    else
+        # BGMDevice is installed and available, so we can continue the script.
+        retries=0
+    fi
+done
+
+# Try opening BGMApp using its bundle ID first so the installer can declare it as "relocatable".
+# That way, if the user moves BGMApp and then installs a newer version of Background Music, the
+# installer will try to find the old version of BGMApp and put the new one in the same place.
+#
+# Use launchctl to make sure we don't run BGMApp as the installer user.
+#
+# If we can't open BGMApp, it's very likely it didn't install properly, so we fail the install.
+logged_in_user_id="$(id -u "${USER}")"
+did_open_bgmapp=false
+
+# TODO: If they have multiple copies of BGMApp, this might open one of the old ones.
+log "Opening Background Music.app by bundle ID"
+if launchctl asuser "${logged_in_user_id}" \
+        open -b com.bearisdriving.BGM.App; then
+    did_open_bgmapp=true
+fi
+
+if [[ $did_open_bgmapp != "true" ]]; then
+    dest_volume_no_trailing_slash="${dest_volume/%\//}"
+    log "Opening ${dest_volume_no_trailing_slash}/Applications/Background Music.app"
+    if launchctl asuser "${logged_in_user_id}" \
+            open "${dest_volume_no_trailing_slash}/Applications/Background Music.app"; then
+        did_open_bgmapp=true
+    fi
+fi
+
+if [[ $did_open_bgmapp != "true" ]]; then
+    log "Opening Background Music.app using AppleScript"
+    if osascript -e 'tell application "Background Music" to activate'; then
+        did_open_bgmapp=true
+    fi
+fi
+
+if [[ $did_open_bgmapp != "true" ]]; then
+    log "Failed to open Background Music.app"
+    # Fail the install.
+    exit 1
+fi
+
+# The installer plays a sound when it finishes, so give BGMApp a second to launch.
+sleep 1
+
+exit 0
+
+

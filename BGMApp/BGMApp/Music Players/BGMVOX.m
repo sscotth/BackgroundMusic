@@ -17,7 +17,7 @@
 //  BGMVOX.m
 //  BGMApp
 //
-//  Copyright © 2016 Kyle Neideck
+//  Copyright © 2016-2018 Kyle Neideck
 //
 
 // Self Include
@@ -30,9 +30,7 @@
 #import "BGMScriptingBridge.h"
 
 // PublicUtility Includes
-#undef CoreAudio_ThreadStampMessages
-#define CoreAudio_ThreadStampMessages 0  // Requires C++
-#include "CADebugMacros.h"
+#import "CADebugMacros.h"
 
 
 #pragma clang assume_nonnull begin
@@ -41,11 +39,11 @@
     BGMScriptingBridge* scriptingBridge;
 }
 
-- (id) init {
+- (instancetype) init {
     if ((self = [super initWithMusicPlayerID:[BGMMusicPlayerBase makeID:@"26498C5D-C18B-4689-8B41-9DA91A78FFAD"]
                                         name:@"VOX"
                                     bundleID:@"com.coppertino.Vox"])) {
-        scriptingBridge = [[BGMScriptingBridge alloc] initWithBundleID:(NSString*)self.bundleID];
+        scriptingBridge = [[BGMScriptingBridge alloc] initWithMusicPlayer:self];
     }
     
     return self;
@@ -53,6 +51,11 @@
 
 - (VoxApplication* __nullable) vox {
     return (VoxApplication*)scriptingBridge.application;
+}
+
+- (void) wasSelected {
+    [super wasSelected];
+    [scriptingBridge ensurePermission];
 }
 
 - (BOOL) isRunning {

@@ -17,7 +17,7 @@
 //  BGMMusicPlayers.mm
 //  BGMApp
 //
-//  Copyright © 2016 Kyle Neideck
+//  Copyright © 2016-2019 Kyle Neideck
 //
 
 // Self include
@@ -33,6 +33,9 @@
 #import "BGMVOX.h"
 #import "BGMDecibel.h"
 #import "BGMHermes.h"
+#import "BGMSwinsian.h"
+#import "BGMMusic.h"
+#import "BGMGooglePlayMusicDesktopPlayer.h"
 
 
 #pragma clang assume_nonnull begin
@@ -46,15 +49,25 @@
 
 - (instancetype) initWithAudioDevices:(BGMAudioDeviceManager*)devices
                          userDefaults:(BGMUserDefaults*)defaults {
+    // The classes handling each music player we support. If you write a new music player class, add
+    // it to this array.
+    NSArray<Class<BGMMusicPlayer>>* mpClasses = @[ [BGMVOX class],
+                                                   [BGMVLC class],
+                                                   [BGMSpotify class],
+                                                   [BGMiTunes class],
+                                                   [BGMDecibel class],
+                                                   [BGMHermes class],
+                                                   [BGMSwinsian class],
+                                                   [BGMMusic class] ];
+
+    // We only support Google Play Music Desktop Player on macOS 10.10 and higher.
+    if (@available(macOS 10.10, *)) {
+        mpClasses = [mpClasses arrayByAddingObject:[BGMGooglePlayMusicDesktopPlayer class]];
+    }
+
     return [self initWithAudioDevices:devices
                  defaultMusicPlayerID:[BGMiTunes sharedMusicPlayerID]
-                   // If you write a new music player class, add it to this array.
-                   musicPlayerClasses:@[ [BGMVOX class],
-                                         [BGMVLC class],
-                                         [BGMSpotify class],
-                                         [BGMiTunes class],
-                                         [BGMDecibel class],
-                                         [BGMHermes class] ]
+                   musicPlayerClasses:mpClasses
                          userDefaults:defaults];
 }
 
@@ -68,11 +81,14 @@
         
         // Init _musicPlayers, an array containing one object for each music player in BGMApp.
         //
-        // Each music player class has a factory method, createInstances, that returns all the instances of that
-        // class BGMApp will use. (Though so far it's always just one instance.)
+        // Each music player class has a factory method, createInstancesWithDefaults, that returns
+        // all the instances of that class BGMApp will use. (Though so far it's always just one
+        // instance.)
         NSMutableArray* musicPlayers = [NSMutableArray new];
         for (Class<BGMMusicPlayer> musicPlayerClass in musicPlayerClasses) {
-            [musicPlayers addObjectsFromArray:[musicPlayerClass createInstances]];
+            NSArray<id<BGMMusicPlayer>>* instances =
+                    [musicPlayerClass createInstancesWithDefaults:userDefaults];
+            [musicPlayers addObjectsFromArray:instances];
         }
         
         _musicPlayers = [NSArray arrayWithArray:musicPlayers];
@@ -133,8 +149,8 @@
     // backwards compatability.
     
     NSString* __nullable bundleID =
-        (__bridge_transfer NSString* __nullable)[audioDevices bgmDevice].GetPropertyData_CFString(kBGMMusicPlayerBundleIDAddress);
-    
+        (__bridge_transfer NSString* __nullable)[audioDevices bgmDevice].GetMusicPlayerBundleID();
+
     DebugMsg("BGMMusicPlayers::initSelectedMusicPlayerFromBGMDevice: "
              "Trying to set selected music player by bundle ID (from BGMDriver). bundleID=%s",
              (bundleID ? bundleID.UTF8String : "(null)"));
@@ -204,6 +220,16 @@
              @"BGMMusicPlayers::setSelectedMusicPlayerImpl: Only the music players in the musicPlayers array can be selected. "
               "newSelectedMusicPlayer=%@",
              newSelectedMusicPlayer.name);
+
+    if (_selectedMusicPlayer == newSelectedMusicPlayer) {
+        DebugMsg("BGMMusicPlayers::setSelectedMusicPlayerImpl: %s is already the selected music "
+                 "player.",
+                 _selectedMusicPlayer.name.UTF8String);
+        return;
+    }
+
+    // Tell the current music player (object) a different player has been selected.
+    [_selectedMusicPlayer wasDeselected];
     
     _selectedMusicPlayer = newSelectedMusicPlayer;
     
@@ -215,6 +241,9 @@
     
     // Save the new setting in user defaults.
     userDefaults.selectedMusicPlayerID = _selectedMusicPlayer.musicPlayerID.UUIDString;
+
+    // Tell the music player (object) it's been selected.
+    [_selectedMusicPlayer wasSelected];
 }
 
 - (void) updateBGMDeviceMusicPlayerProperties {
@@ -224,13 +253,11 @@
              @"BGMMusicPlayers::updateBGMDeviceMusicPlayerProperties: Music player has neither bundle ID nor PID");
 
     if (self.selectedMusicPlayer.pid) {
-        [audioDevices bgmDevice].SetPropertyData_CFType(kBGMMusicPlayerProcessIDAddress,
-                                                        (__bridge CFNumberRef)self.selectedMusicPlayer.pid);
+        [audioDevices bgmDevice].SetMusicPlayerProcessID((__bridge CFNumberRef)self.selectedMusicPlayer.pid);
     }
     
     if (self.selectedMusicPlayer.bundleID) {
-        [audioDevices bgmDevice].SetPropertyData_CFString(kBGMMusicPlayerBundleIDAddress,
-                                                          (__bridge CFStringRef)self.selectedMusicPlayer.bundleID);
+        [audioDevices bgmDevice].SetMusicPlayerBundleID((__bridge CFStringRef)self.selectedMusicPlayer.bundleID);
     }
 }
 

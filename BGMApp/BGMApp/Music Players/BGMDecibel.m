@@ -17,7 +17,7 @@
 //  BGMDecibel.m
 //  BGMApp
 //
-//  Copyright © 2016 Kyle Neideck
+//  Copyright © 2016-2018 Kyle Neideck
 //  Copyright © 2016 Tanner Hoke
 //
 
@@ -31,9 +31,7 @@
 #import "BGMScriptingBridge.h"
 
 // PublicUtility Includes
-#undef CoreAudio_ThreadStampMessages
-#define CoreAudio_ThreadStampMessages 0  // Requires C++
-#include "CADebugMacros.h"
+#import "CADebugMacros.h"
 
 
 #pragma clang assume_nonnull begin
@@ -42,11 +40,11 @@
     BGMScriptingBridge* scriptingBridge;
 }
 
-- (id) init {
+- (instancetype) init {
     if ((self = [super initWithMusicPlayerID:[BGMMusicPlayerBase makeID:@"A9790CD5-4886-47C7-9FFC-DD70743CF2BF"]
                                         name:@"Decibel"
                                     bundleID:@"org.sbooth.Decibel"])) {
-        scriptingBridge = [[BGMScriptingBridge alloc] initWithBundleID:(NSString*)self.bundleID];
+        scriptingBridge = [[BGMScriptingBridge alloc] initWithMusicPlayer:self];
     }
     
     return self;
@@ -54,6 +52,11 @@
 
 - (DecibelApplication* __nullable) decibel {
     return (DecibelApplication* __nullable)scriptingBridge.application;
+}
+
+- (void) wasSelected {
+    [super wasSelected];
+    [scriptingBridge ensurePermission];
 }
 
 - (BOOL) isRunning {

@@ -17,11 +17,13 @@
 //  BGMXPCListener.mm
 //  BGMApp
 //
-//  Copyright © 2016 Kyle Neideck
+//  Copyright © 2016, 2017 Kyle Neideck
 //
 
 // Self Include
 #import "BGMXPCListener.h"
+
+// Local Includes
 #import "BGMPlayThrough.h"  // For kDeviceNotStarting.
 
 
@@ -52,6 +54,9 @@
         
         // Set up the connection to BGMXPCHelper.
         [self initHelperConnectionWithErrorHandler:errorHandler];
+
+        // Pass the connection to the audio device manager so it can tell BGMXPCHelper the output device's ID.
+        [audioDevices setBGMXPCHelperConnection:helperConnection];
     }
     
     return self;
@@ -142,6 +147,9 @@
             retryAfterTimeout(nil);
         };
     }];
+
+    // Pass the new connection to the audio device manager.
+    [audioDevices setBGMXPCHelperConnection:helperConnection];
 }
 
 - (void) dealloc {
@@ -175,19 +183,19 @@
     return YES;
 }
 
-- (void) waitForOutputDeviceToStartWithReply:(void (^)(NSError*))reply {
+- (void) startPlayThroughSyncWithReply:(void (^)(NSError*))reply forUISoundsDevice:(BOOL)isUI {
     NSString* description;
     OSStatus err;
     
     try {
-        err = [audioDevices waitForOutputDeviceToStart];
+        err = [audioDevices startPlayThroughSync:isUI];
     } catch (CAException e) {
-        // waitForOutputDeviceToStart should never throw a CAException, but check anyway in case we change that at some point.
-        LogError("BGMXPCListener::waitForOutputDeviceToStartWithReply: Caught CAException (%d). Replying kBGMXPC_HardwareError.",
+        // startPlayThroughSync should never throw a CAException, but check anyway in case we change that at some point.
+        LogError("BGMXPCListener::startPlayThroughSyncWithReply: Caught CAException (%d). Replying kBGMXPC_HardwareError.",
                  e.GetError());
         err = kBGMXPC_HardwareError;
     } catch (...) {
-        LogError("BGMXPCListener::waitForOutputDeviceToStartWithReply: Caught unknown exception. Replying kBGMXPC_InternalError.");
+        LogError("BGMXPCListener::startPlayThroughSyncWithReply: Caught unknown exception. Replying kBGMXPC_InternalError.");
         err = kBGMXPC_InternalError;
 #if DEBUG
         throw;
@@ -210,10 +218,10 @@
             err = kBGMXPC_HardwareError;
             break;
             
-        case BGMPlayThrough::kDeviceNotStarting:
+        case kBGMErrorCode_ReturningEarly:
             // We have to send a more specific error in this case because BGMDevice handles this case differently.
-            description = @"The output device is not starting.";
-            err = kBGMXPC_HardwareNotStartingError;
+            description = @"BGMApp could not wait for the output device to be ready for IO.";
+            err = kBGMXPC_ReturningEarlyError;
             break;
             
         default:

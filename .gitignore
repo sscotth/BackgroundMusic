@@ -2,6 +2,14 @@
 .*.swp
 /BGMDriver/BGMDriver/quick_install.conf
 /build_and_install.log
+.idea/
+tags
+cmake-build-debug/
+/Background-Music-*/
+BGM.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+Images/*.aux
+Images/*.log
+/archives/
 
 # Everything below is from https://github.com/github/gitignore/blob/master/Objective-C.gitignore
 

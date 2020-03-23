@@ -17,7 +17,7 @@
 //  BGM_Clients.cpp
 //  BGMDriver
 //
-//  Copyright © 2016 Kyle Neideck
+//  Copyright © 2016, 2017, 2019 Kyle Neideck
 //  Copyright © 2017 Andrew Tonner
 //
 
@@ -31,12 +31,14 @@
 // PublicUtility Includes
 #include "CAException.h"
 #include "CACFDictionary.h"
+#include "CADispatchQueue.h"
 
 
 #pragma mark Construction/Destruction
 
-BGM_Clients::BGM_Clients(BGM_TaskQueue* inTaskQueue)
+BGM_Clients::BGM_Clients(AudioObjectID inOwnerDeviceID, BGM_TaskQueue* inTaskQueue)
 :
+    mOwnerDeviceID(inOwnerDeviceID),
     mClientMap(inTaskQueue)
 {
     mRelativeVolumeCurve.AddRange(kAppRelativeVolumeMinRawValue,
@@ -109,9 +111,10 @@ bool    BGM_Clients::StartIONonRT(UInt32 inClientID)
         // Make sure we can start
         ThrowIf(mStartCount == UINT64_MAX, CAException(kAudioHardwareIllegalOperationError), "BGM_Clients::StartIO: failed to start because the ref count was maxxed out already");
         
-        DebugMsg("BGM_Clients::StartIO: Client %u (%s) starting IO",
+        DebugMsg("BGM_Clients::StartIO: Client %u (%s, %d) starting IO",
                  inClientID,
-                 CFStringGetCStringPtr(theClient.mBundleID.GetCFString(), kCFStringEncodingUTF8));
+                 CFStringGetCStringPtr(theClient.mBundleID.GetCFString(), kCFStringEncodingUTF8),
+                 theClient.mProcessID);
         
         mClientMap.StartIONonRT(inClientID);
         
@@ -159,9 +162,10 @@ bool    BGM_Clients::StopIONonRT(UInt32 inClientID)
     
     if(theClient.mDoingIO)
     {
-        DebugMsg("BGM_Clients::StopIO: Client %u (%s) stopping IO",
+        DebugMsg("BGM_Clients::StopIO: Client %u (%s, %d) stopping IO",
                  inClientID,
-                 CFStringGetCStringPtr(theClient.mBundleID.GetCFString(), kCFStringEncodingUTF8));
+                 CFStringGetCStringPtr(theClient.mBundleID.GetCFString(), kCFStringEncodingUTF8),
+                 theClient.mProcessID);
         
         mClientMap.StopIONonRT(inClientID);
         
@@ -209,24 +213,26 @@ void    BGM_Clients::SendIORunningNotifications(bool sendIsRunningNotification, 
 {
     if(sendIsRunningNotification || sendIsRunningSomewhereOtherThanBGMAppNotification)
     {
-        AudioObjectPropertyAddress theChangedProperties[2];
-        UInt32 theNotificationCount = 0;
-        
-        if(sendIsRunningNotification)
-        {
-            DebugMsg("BGM_Clients::SendIORunningNotifications: Sending kAudioDevicePropertyDeviceIsRunning");
-            theChangedProperties[0] = { kAudioDevicePropertyDeviceIsRunning, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMaster };
-            theNotificationCount++;
-        }
-        
-        if(sendIsRunningSomewhereOtherThanBGMAppNotification)
-        {
-            DebugMsg("BGM_Clients::SendIORunningNotifications: Sending kAudioDeviceCustomPropertyDeviceIsRunningSomewhereOtherThanBGMApp");
-            theChangedProperties[theNotificationCount] = kBGMRunningSomewhereOtherThanBGMAppAddress;
-            theNotificationCount++;
-        }
-        
-        BGM_PlugIn::Host_PropertiesChanged(kObjectID_Device, theNotificationCount, theChangedProperties);
+        CADispatchQueue::GetGlobalSerialQueue().Dispatch(false, ^{
+            AudioObjectPropertyAddress theChangedProperties[2];
+            UInt32 theNotificationCount = 0;
+
+            if(sendIsRunningNotification)
+            {
+                DebugMsg("BGM_Clients::SendIORunningNotifications: Sending kAudioDevicePropertyDeviceIsRunning");
+                theChangedProperties[0] = { kAudioDevicePropertyDeviceIsRunning, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMaster };
+                theNotificationCount++;
+            }
+
+            if(sendIsRunningSomewhereOtherThanBGMAppNotification)
+            {
+                DebugMsg("BGM_Clients::SendIORunningNotifications: Sending kAudioDeviceCustomPropertyDeviceIsRunningSomewhereOtherThanBGMApp");
+                theChangedProperties[theNotificationCount] = kBGMRunningSomewhereOtherThanBGMAppAddress;
+                theNotificationCount++;
+            }
+
+            BGM_PlugIn::Host_PropertiesChanged(mOwnerDeviceID, theNotificationCount, theChangedProperties);
+        });
     }
 }
 
@@ -294,7 +300,7 @@ Float32 BGM_Clients::GetClientRelativeVolumeRT(UInt32 inClientID) const
 {
     BGM_Client theClient;
     bool didGetClient = mClientMap.GetClientRT(inClientID, &theClient);
-    return (didGetClient ? theClient.mRelativeVolume : 1.0);
+    return (didGetClient ? theClient.mRelativeVolume : 1.0f);
 }
 
 SInt32 BGM_Clients::GetClientPanPositionRT(UInt32 inClientID) const
@@ -344,23 +350,20 @@ bool    BGM_Clients::SetClientsRelativeVolumes(const CACFArray inAppVolumes)
                 // keep the middle volume equal to 1 (meaning apps' volumes are unchanged by default).
                 Float32 theRelativeVolume = mRelativeVolumeCurve.ConvertRawToScalar(theRawRelativeVolume) * 4;
 
-                // Try to update the client's volume, first by PID and then, if that fails, by bundle ID
-                //
-                // TODO: Should we always try both in case an app has multiple clients?
+                // Try to update the client's volume, first by PID and then by bundle ID. Always try
+                // both because apps can have multiple clients.
                 if(mClientMap.SetClientsRelativeVolume(theAppPID, theRelativeVolume))
                 {
                     didChangeAppVolumes = true;
                 }
-                else if(mClientMap.SetClientsRelativeVolume(theAppBundleID, theRelativeVolume))
+
+                if(mClientMap.SetClientsRelativeVolume(theAppBundleID, theRelativeVolume))
                 {
                     didChangeAppVolumes = true;
                 }
-                else
-                {
-                    // TODO: The app isn't currently a client, so we should add it to the past clients map, or update its
-                    //       past volume if it's already in there.
-                }
-            
+
+                // TODO: If the app isn't currently a client, we should add it to the past clients
+                //       map, or update its past volume if it's already in there.
             }
         }
         
@@ -377,15 +380,14 @@ bool    BGM_Clients::SetClientsRelativeVolumes(const CACFArray inAppVolumes)
                 {
                     didChangeAppVolumes = true;
                 }
-                else if(mClientMap.SetClientsPanPosition(theAppBundleID, thePanPosition))
+
+                if(mClientMap.SetClientsPanPosition(theAppBundleID, thePanPosition))
                 {
                     didChangeAppVolumes = true;
                 }
-                else
-                {
-                    // TODO: The app isn't currently a client, so we should add it to the past clients map, or update its
-                    //       past pan position if it's already in there.
-                }
+
+                // TODO: If the app isn't currently a client, we should add it to the past clients
+                //       map, or update its past pan position if it's already in there.
             }
         }
         

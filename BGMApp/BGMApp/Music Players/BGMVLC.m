@@ -17,8 +17,8 @@
 //  BGMVLC.m
 //  BGMApp
 //
-//  Copyright © 2016 Kyle Neideck
-//  Portions copyright (C) 2012 Peter Ljunglöf. All rights reserved.
+//  Copyright © 2016-2018 Kyle Neideck
+//  Copyright (C) 2012 Peter Ljunglöf. All rights reserved.
 //
 
 // Self Include
@@ -31,9 +31,7 @@
 #import "BGMScriptingBridge.h"
 
 // PublicUtility Includes
-#undef CoreAudio_ThreadStampMessages
-#define CoreAudio_ThreadStampMessages 0  // Requires C++
-#include "CADebugMacros.h"
+#import "CADebugMacros.h"
 
 
 #pragma clang assume_nonnull begin
@@ -42,11 +40,11 @@
     BGMScriptingBridge* scriptingBridge;
 }
 
-- (id) init {
+- (instancetype) init {
     if ((self = [super initWithMusicPlayerID:[BGMMusicPlayerBase makeID:@"5226F4B9-C740-4045-A273-4B8EABC0E8FC"]
                                         name:@"VLC"
                                     bundleID:@"org.videolan.vlc"])) {
-        scriptingBridge = [[BGMScriptingBridge alloc] initWithBundleID:(NSString*)self.bundleID];
+        scriptingBridge = [[BGMScriptingBridge alloc] initWithMusicPlayer:self];
     }
     
     return self;
@@ -54,6 +52,11 @@
 
 - (VLCApplication* __nullable) vlc {
     return (VLCApplication*)scriptingBridge.application;
+}
+
+- (void) wasSelected {
+    [super wasSelected];
+    [scriptingBridge ensurePermission];
 }
 
 - (BOOL) isRunning {
@@ -101,7 +104,7 @@
 //
 // VLC's Scripting Bridge interface doesn't seem to have a cleaner way to do this.
 + (void) togglePlay {
-    NSString* src = @"tell application \"VLC\" to play";
+    NSString* src = @"tell application id \"org.videolan.vlc\" to play";
     NSAppleScript* script = [[NSAppleScript alloc] initWithSource:src];
     [script executeAndReturnError:nil];
 }

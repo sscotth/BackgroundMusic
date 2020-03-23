@@ -17,42 +17,33 @@
 //  BGMMusicPlayersUnitTests.mm
 //  BGMAppUnitTests
 //
-//  Copyright © 2016 Kyle Neideck
+//  Copyright © 2016-2020 Kyle Neideck
 //
 
 // Unit include
 #import "BGMMusicPlayers.h"
 
-// Local includes
-#import "BGM_TestUtils.h"
-
+// BGM includes
 #import "BGM_Types.h"
 #import "BGMAudioDeviceManager.h"
 #import "BGMiTunes.h"
-#import "BGMVLC.h"
 #import "BGMDecibel.h"
 #import "BGMSpotify.h"
+#import "BGMVLC.h"
 
-// PublicUtility includes
-#import "CAHALAudioDevice.h"  // Mocked
+// Local includes
+#import "BGM_TestUtils.h"
+#import "MockAudioObject.h"
+#import "MockAudioObjects.h"
 
 // System includes
 #import <Foundation/Foundation.h>
+#import <XCTest/XCTest.h>
 
 
-@interface BGMMockAudioDeviceManager : BGMAudioDeviceManager
-@end
-
-@implementation BGMMockAudioDeviceManager
-
-+ (CAHALAudioDevice) bgmDevice {
-    static CAHALAudioDevice device(CFSTR("MockBGMDevice"));
-    return device;
-}
-
-@end
-
-// ----
+// Note that the PublicUtility classes that we use to communicate with the HAL, CAHALAudioObject and
+// CAHALAudioSystemObject, are also mocked. The unit tests are compiled with mock implementations:
+// Mock_CAHALAudioObject.cpp and Mock_CAHALAudioSystemObject.cpp.
 
 @interface BGMMockUserDefaults : BGMUserDefaults
 
@@ -83,13 +74,28 @@
 
 @end
 
-// ----
+// -------------------------------------------------------------------------------------------------
+
+@interface BGMMockAudioDeviceManager : BGMAudioDeviceManager
+@end
+
+@implementation BGMMockAudioDeviceManager {
+    BGMBackgroundMusicDevice bgmDevice;
+}
+
+- (BGMBackgroundMusicDevice) bgmDevice {
+    return bgmDevice;
+}
+
+@end
+
+// -------------------------------------------------------------------------------------------------
 
 @interface BGMMusicPlayersUnitTests : XCTestCase
 @end
 
 @implementation BGMMusicPlayersUnitTests {
-    BGMMockAudioDeviceManager* devices;
+    BGMAudioDeviceManager* devices;
     BGMMockUserDefaults* defaults;
     
     NSUUID* spotifyID;
@@ -98,7 +104,11 @@
 
 - (void) setUp {
     [super setUp];
-    
+
+    // Mock BGMDevice.
+    MockAudioObjects::CreateMockDevice(kBGMDeviceUID);
+    MockAudioObjects::CreateMockDevice(kBGMDeviceUID_UISounds);
+
     devices = [BGMMockAudioDeviceManager new];
     defaults = [BGMMockUserDefaults new];
     
@@ -108,12 +118,11 @@
 }
 
 - (void) tearDown {
-    [self resetDevice];
-    
     [super tearDown];
+    MockAudioObjects::DestroyMocks();
 }
 
-- (void) testNoSelectedMusicPlayerStored {
+- (void) testNoSelectedMusicPlayerStored_iTunesDefault {
     // Test the case where the user has never changed the music player preference.
     
     // Test with iTunes as the default.
@@ -130,16 +139,20 @@
     
     XCTAssertEqualObjects(players.selectedMusicPlayer.musicPlayerID, [BGMiTunes sharedMusicPlayerID]);
     XCTAssertEqualObjects(players.selectedMusicPlayer.name, @"iTunes");
-    
-    [self resetDevice];
-    
+}
+
+
+- (void) testNoSelectedMusicPlayerStored_vlcDefault {
+    // Test the case where the user has never changed the music player preference.
+
     // Test with VLC as the default.
-    players = [[BGMMusicPlayers alloc] initWithAudioDevices:devices
-                                       defaultMusicPlayerID:vlcID
-                                         musicPlayerClasses:@[ BGMiTunes.class,
-                                                               BGMVLC.class,
-                                                               BGMDecibel.class ]
-                                               userDefaults:defaults];
+    BGMMusicPlayers* players =
+            [[BGMMusicPlayers alloc] initWithAudioDevices:devices
+                                     defaultMusicPlayerID:vlcID
+                                       musicPlayerClasses:@[ BGMiTunes.class,
+                                                             BGMVLC.class,
+                                                             BGMDecibel.class ]
+                                             userDefaults:defaults];
     
     XCTAssertEqual(players.musicPlayers.count, 3);
     
@@ -167,15 +180,15 @@
     
     XCTAssertEqualObjects(players.selectedMusicPlayer.musicPlayerID, spotifyID);
     XCTAssertEqualObjects(players.selectedMusicPlayer.name, @"Spotify");
-    
-    [self resetDevice];
-    
+}
+
+- (void) testUnrecognizedSelectedMusicPlayerInUserDefaults {
     // If there's an unrecognized ID in user defaults, the default music player should be selected.
     defaults.selectedPlayerID = [[NSUUID alloc] initWithUUIDString:@"11111111-1111-1111-0000-000000000000"];
     
     // This initializer sets iTunes as the default music player and adds all the other music players.
-    players = [[BGMMusicPlayers alloc] initWithAudioDevices:devices
-                                               userDefaults:defaults];
+    BGMMusicPlayers* players = [[BGMMusicPlayers alloc] initWithAudioDevices:devices
+                                                                userDefaults:defaults];
     
     XCTAssert(players.musicPlayers.count >= 6);
     
@@ -187,8 +200,7 @@
     // When it doesn't find a selected music player in user defaults, it should check BGMDevice's music
     // player properties.
     
-    [devices bgmDevice].SetPropertyData_CFString(kBGMMusicPlayerBundleIDAddress,
-                                                 CFSTR("org.videolan.vlc"));
+    [devices bgmDevice].SetMusicPlayerBundleID(CFSTR("org.videolan.vlc"));
     
     BGMMusicPlayers* players = [[BGMMusicPlayers alloc] initWithAudioDevices:devices
                                                                 userDefaults:defaults];
@@ -200,11 +212,6 @@
 }
 
 // TODO: Test setting the selectedMusicPlayer property
-
-- (void) resetDevice {
-    // Reset the mock BGMDevice.
-    [devices bgmDevice].SetPropertyData_CFString(kBGMMusicPlayerBundleIDAddress, NULL);
-}
 
 @end
 

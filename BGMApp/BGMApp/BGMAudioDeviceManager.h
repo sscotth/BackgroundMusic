@@ -17,31 +17,46 @@
 //  BGMAudioDeviceManager.h
 //  BGMApp
 //
-//  Copyright © 2016 Kyle Neideck
+//  Copyright © 2016-2018 Kyle Neideck
 //
-//  Manages the BGMDevice and the output device. Sets the system's current default device as the
-//  output device on init, then starts playthrough and mirroring the devices' controls. The output
-//  device can be changed but the BGMDevice is fixed.
+//  Manages BGMDevice and the output device. Sets the system's current default device as the output
+//  device on init, then starts playthrough and mirroring the devices' controls.
 //
 
+#if defined(__cplusplus)
+
+// Local Includes
+#import "BGMBackgroundMusicDevice.h"
+
 // PublicUtility Includes
-#ifdef __cplusplus
 #import "CAHALAudioDevice.h"
-#endif
+
+#endif /* defined(__cplusplus) */
 
 // System Includes
 #import <Foundation/Foundation.h>
 #import <CoreAudio/AudioHardwareBase.h>
 
+// Forward Declarations
+@class BGMOutputVolumeMenuItem;
+@class BGMOutputDeviceMenuSection;
+
 
 #pragma clang assume_nonnull begin
 
-extern int const kBGMErrorCode_BGMDeviceNotFound;
-extern int const kBGMErrorCode_OutputDeviceNotFound;
+static const int kBGMErrorCode_OutputDeviceNotFound = 1;
+static const int kBGMErrorCode_ReturningEarly       = 2;
 
 @interface BGMAudioDeviceManager : NSObject
 
-- (instancetype) initWithError:(NSError**)error;
+// Returns nil if BGMDevice isn't installed.
+- (instancetype) init;
+
+// Set the BGMOutputVolumeMenuItem to be notified when the output device is changed.
+- (void) setOutputVolumeMenuItem:(BGMOutputVolumeMenuItem*)item;
+
+// Set the BGMOutputDeviceMenuSection to be notified when the output device is changed.
+- (void) setOutputDeviceMenuSection:(BGMOutputDeviceMenuSection*)menuSection;
 
 // Set BGMDevice as the default audio device for all processes
 - (NSError* __nullable) setBGMDeviceAsOSDefault;
@@ -49,7 +64,12 @@ extern int const kBGMErrorCode_OutputDeviceNotFound;
 - (NSError* __nullable) unsetBGMDeviceAsOSDefault;
 
 #ifdef __cplusplus
-- (CAHALAudioDevice) bgmDevice;
+// The virtual device published by BGMDriver.
+- (BGMBackgroundMusicDevice) bgmDevice;
+
+// The device BGMApp will play audio through, making it, from the user's perspective, the system's
+// default output device.
+- (CAHALAudioDevice) outputDevice;
 #endif
 
 - (BOOL) isOutputDevice:(AudioObjectID)deviceID;
@@ -74,8 +94,16 @@ extern int const kBGMErrorCode_OutputDeviceNotFound;
                                  dataSourceID:(UInt32)dataSourceID
                               revertOnFailure:(BOOL)revertOnFailure;
 
-// Blocks until IO has started running on the output device (for playthrough).
-- (OSStatus) waitForOutputDeviceToStart;
+// Start playthrough synchronously. Blocks until IO has started on the output device and playthrough
+// is running. See BGMPlayThrough.
+//
+// Returns one of the error codes defined by this class or BGMPlayThrough, or an AudioHardware error
+// code received from the HAL.
+- (OSStatus) startPlayThroughSync:(BOOL)forUISoundsDevice;
+
+// When the output device is changed, BGMAudioDeviceManager will send the ID of the new output
+// device to BGMXPCHelper through this connection.
+- (void) setBGMXPCHelperConnection:(NSXPCConnection* __nullable)connection;
 
 @end
 

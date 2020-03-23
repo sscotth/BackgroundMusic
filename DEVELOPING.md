@@ -6,18 +6,18 @@ The codebase is split into two projects: BGMDriver, a [userspace](https://en.wik
 Audio](https://developer.apple.com/library/mac/documentation/MusicAudio/Conceptual/CoreAudioOverview/Introduction/Introduction.html)
 [HAL](https://developer.apple.com/library/mac/documentation/DeviceDrivers/Conceptual/WritingAudioDrivers/AudioOnMacOSX/AudioOnMacOSX.html#//apple_ref/doc/uid/TP30000730-TPXREF104)
 [plugin](https://developer.apple.com/library/prerelease/content/samplecode/AudioDriverExamples/Listings/ReadMe_txt.html)
-that publishes the virtual audio device, and BGMApp, which handles the UI, passing audio from the virtual device to the
-real output device and a few other things. The virtual device is usually referred to as "BGMDevice" in the code.  Any
-code shared between the two projects is kept in the `SharedSource` dir.
+that publishes the virtual audio device<sup id="a1">[1](#f1)</sup>, and BGMApp, which handles the UI, passing audio from
+the virtual device to the real output device and a few other things. The virtual device is usually referred to as
+"BGMDevice" in the code.  Any code shared between the two projects is kept in the `SharedSource` dir.
 
 ## Summary
 
-From the user's perspective, BGMDevice appears as one input device and one output device, both named "Background Music
-Device". They're shown in `System Preferences > Sound` along with the real audio devices.
+From the user's perspective, BGMDevice appears as one input device and one output device, both named "Background Music".
+They're shown in `System Preferences > Sound` along with the real audio devices.
 
 When you start BGMApp, it sets BGMDevice as your system's default output device so the system (i.e. Core Audio) will
-start sending all<sup id="a1">[1](#f1)</sup> your audio data to BGMDriver. BGMDriver plays that audio on BGMDevice's
-input stream, and the user can record it by selecting "Background Music Device" in QuickTime the same way they'd select
+start sending all<sup id="a2">[2](#f2)</sup> your audio data to BGMDriver. BGMDriver plays that audio on BGMDevice's
+input stream, and the user can record it by selecting the Background Music device in QuickTime the same way they'd select
 a microphone.
 
 So that you can still hear the audio, BGMApp starts listening to BGMDevice's input stream and playing the audio out of
@@ -50,10 +50,10 @@ Nothing](http://www.rossbencina.com/code/real-time-audio-programming-101-time-wa
 
 ## BGMDriver
 
-The BGMDriver project is an audio driver for a virtual audio device called Background Music Device, which we use to
-intercept the audio playing on the user's system. The driver processes the audio data to apply per-app volumes, see if
-the music player is playing, etc. and then writes the audio to BGMDevice's input stream. It's essentially a loopback
-device with a few extra features.
+The BGMDriver project is an audio driver for a virtual audio device named "Background Music", which we use to intercept
+the audio playing on the user's system. The driver processes the audio data to apply per-app volumes, see if the music
+player is playing, etc. and then writes the audio to BGMDevice's input stream. It's essentially a loopback device with a
+few extra features.
 
 There are quite a few other open-source projects with drivers that do the same
 thing--[Soundflower](https://github.com/mattingalls/Soundflower) is probably the most well known--but as far as I know
@@ -152,8 +152,8 @@ for Xcode package, which you can find in the [Apple developer downloads](https:/
 BGMApp is a fairly standard Cocoa status-bar app, for the most part. The UI is simple and mostly built in Interface
 Builder.
 
-`awakeFromNib` in [AppDelegate.mm](/BGMApp/BGMApp/AppDelegate.mm) is (more or less) the entry point/main function.
-`applicationDidFinishLaunching` gets called next and finishes setting things up.
+`awakeFromNib` in [BGMAppDelegate.mm](/BGMApp/BGMApp/BGMAppDelegate.mm) is (more or less) the entry point/main
+function. `applicationDidFinishLaunching` gets called next and finishes setting things up.
 
 At launch, BGMApp sets BGMDevice as the system's default device and starts playing the audio from BGMDevice through the
 actual output device. Usually that's the device that BGMDevice replaced when we set it as the default device. When
@@ -216,8 +216,10 @@ Scheme...`, select the Background Music scheme, and add the environment var in R
 
 ----
 
-<b id="f1">[1]</b> All, unless you're playing audio through a program that's set to always use a specific device, or one
-that doesn't switch to the new default device right away. The latter would usually be a bug in that program and I doubt
-we could do anything about it. [↩](#a1)
+<b id="f1">[1]</b> It actually publishes two devices -- the main one and one for UI-related sounds, but you probably
+only need to know about the main one. [↩](#a1)
+
+<b id="f2">[2]</b> All, unless you're playing audio through a program that's set to always use a specific device or,
+for some reason, doesn't switch to the new default device right away. [↩](#a2)
 
 

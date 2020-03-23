@@ -17,7 +17,7 @@
 //  BGMPlayThrough.h
 //  BGMApp
 //
-//  Copyright © 2016, 2017 Kyle Neideck
+//  Copyright © 2016, 2017, 2020 Kyle Neideck
 //
 //  Reads audio from an input device and immediately writes it to an output device. We currently use this class with the input
 //  device always set to BGMDevice and the output device set to the one selected in the preferences menu.
@@ -39,10 +39,13 @@
 #ifndef BGMApp__BGMPlayThrough
 #define BGMApp__BGMPlayThrough
 
+// Local Includes
+#include "BGMAudioDevice.h"
+#include "BGMPlayThroughRTLogger.h"
+
 // PublicUtility Includes
-#include "CARingBuffer.h"
-#include "CAHALAudioDevice.h"
 #include "CAMutex.h"
+#include "CARingBuffer.h"
 
 // STL Includes
 #include <atomic>
@@ -62,7 +65,7 @@ public:
     static const OSStatus kDeviceNotStarting = 100;
 
 public:
-                        BGMPlayThrough(CAHALAudioDevice inInputDevice, CAHALAudioDevice inOutputDevice);
+                        BGMPlayThrough(BGMAudioDevice inInputDevice, BGMAudioDevice inOutputDevice);
                         ~BGMPlayThrough();
                         // Disallow copying
                         BGMPlayThrough(const BGMPlayThrough&) = delete;
@@ -76,16 +79,16 @@ public:
     
 private:
     /*! @throws CAException */
-    void                Init(CAHALAudioDevice inInputDevice, CAHALAudioDevice inOutputDevice);
-    
+    void                Init(BGMAudioDevice inInputDevice, BGMAudioDevice inOutputDevice);
+
+public:
     /*! @throws CAException */
     void                Activate();
     /*! @throws CAException */
     void                Deactivate();
-    
+
+private:
     void                AllocateBuffer();
-    
-    static bool         IsBGMDevice(CAHALAudioDevice inDevice);
 
     /*! @throws CAException */
     void                CreateIOProcIDs();
@@ -102,8 +105,8 @@ public:
      Pass null for either param to only change one of the devices.
      @throws CAException
      */
-    void                SetDevices(CAHALAudioDevice* __nullable inInputDevice,
-                                   CAHALAudioDevice* __nullable inOutputDevice);
+    void                SetDevices(const BGMAudioDevice* __nullable inInputDevice,
+                                   const BGMAudioDevice* __nullable inOutputDevice);
     
     /*! @throws CAException */
     void                Start();
@@ -113,7 +116,8 @@ public:
     OSStatus            WaitForOutputDeviceToStart() noexcept;
     
 private:
-    void                ReleaseThreadsWaitingForOutputToStart() const;
+    /*! Real-time safe. */
+    void                ReleaseThreadsWaitingForOutputToStart();
     
 public:
     OSStatus            Stop();
@@ -128,7 +132,7 @@ private:
     static void         HandleBGMDeviceIsRunning(BGMPlayThrough* refCon);
     static void         HandleBGMDeviceIsRunningSomewhereOtherThanBGMApp(BGMPlayThrough* refCon);
     
-    static bool         IsRunningSomewhereOtherThanBGMApp(const CAHALAudioDevice& inBGMDevice);
+    static bool         IsRunningSomewhereOtherThanBGMApp(const BGMAudioDevice& inBGMDevice);
 
     static OSStatus     InputDeviceIOProc(AudioObjectID           inDevice,
                                           const AudioTimeStamp*   inNow,
@@ -154,24 +158,21 @@ private:
     
     // The IOProcs call this to update their IOState member. Also stops the IOProc if its state has been set to Stopping.
     // Returns true if it changes the state.
-    static bool         UpdateIOProcState(const char* __nullable callerName,
+    static bool         UpdateIOProcState(const char* inCallerName,
+                                          BGMPlayThroughRTLogger& inRTLogger,
                                           std::atomic<IOState>& inState,
                                           AudioDeviceIOProcID __nullable inIOProcID,
-                                          CAHALAudioDevice& inDevice,
+                                          BGMAudioDevice& inDevice,
                                           IOState& outNewState);
-    
-    static void         HandleRingBufferError(CARingBufferError err,
-                                              const char* methodName,
-                                              const char* callReturningErr);
     
 private:
     CARingBuffer        mBuffer;
     
-    AudioDeviceIOProcID __nullable mInputDeviceIOProcID;
-    AudioDeviceIOProcID __nullable mOutputDeviceIOProcID;
+    AudioDeviceIOProcID __nullable mInputDeviceIOProcID { nullptr };
+    AudioDeviceIOProcID __nullable mOutputDeviceIOProcID { nullptr };
     
-    CAHALAudioDevice    mInputDevice { kAudioDeviceUnknown };
-    CAHALAudioDevice    mOutputDevice { kAudioDeviceUnknown };
+    BGMAudioDevice      mInputDevice { kAudioObjectUnknown };
+    BGMAudioDevice      mOutputDevice { kAudioObjectUnknown };
     
     CAMutex             mStateMutex { "Playthrough state" };
     
@@ -181,13 +182,13 @@ private:
     bool                mActive = false;
     bool                mPlayingThrough = false;
 
-    UInt64              mLastNotifiedIOStoppedOnBGMDevice;
+    UInt64              mLastNotifiedIOStoppedOnBGMDevice { 0 };
 
     std::atomic<IOState>    mInputDeviceIOProcState { IOState::Stopped };
     std::atomic<IOState>    mOutputDeviceIOProcState { IOState::Stopped };
     
     // For debug logging.
-    UInt64              mToldOutputDeviceToStartAt;
+    UInt64              mToldOutputDeviceToStartAt { 0 };
 
     // IOProc vars. (Should only be used inside IOProcs.)
     
@@ -197,8 +198,10 @@ private:
     Float64             mLastOutputSampleTime = -1;
     
     // Subtract this from the output time to get the input time.
-    Float64             mInToOutSampleOffset;
-    
+    Float64             mInToOutSampleOffset { 0.0 };
+
+    BGMPlayThroughRTLogger mRTLogger;
+
 };
 
 #pragma clang assume_nonnull end

@@ -17,7 +17,7 @@
 //  BGMiTunes.m
 //  BGMApp
 //
-//  Copyright © 2016 Kyle Neideck
+//  Copyright © 2016-2018 Kyle Neideck
 //
 
 // Self Include
@@ -30,9 +30,7 @@
 #import "BGMScriptingBridge.h"
 
 // PublicUtility Includes
-#undef CoreAudio_ThreadStampMessages
-#define CoreAudio_ThreadStampMessages 0  // Requires C++
-#include "CADebugMacros.h"
+#import "CADebugMacros.h"
 
 
 #pragma clang assume_nonnull begin
@@ -47,11 +45,11 @@
     return (NSUUID*)musicPlayerID;
 }
 
-- (id) init {
+- (instancetype) init {
     if ((self = [super initWithMusicPlayerID:[BGMiTunes sharedMusicPlayerID]
                                         name:@"iTunes"
                                     bundleID:@"com.apple.iTunes"])) {
-        scriptingBridge = [[BGMScriptingBridge alloc] initWithBundleID:(NSString* __nonnull)self.bundleID];
+        scriptingBridge = [[BGMScriptingBridge alloc] initWithMusicPlayer:self];
     }
     
     return self;
@@ -59,6 +57,11 @@
 
 - (iTunesApplication* __nullable) iTunes {
     return (iTunesApplication*)scriptingBridge.application;
+}
+
+- (void) wasSelected {
+    [super wasSelected];
+    [scriptingBridge ensurePermission];
 }
 
 - (BOOL) isRunning {

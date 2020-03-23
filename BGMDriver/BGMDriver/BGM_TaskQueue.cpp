@@ -98,14 +98,16 @@ BGM_TaskQueue::BGM_TaskQueue()
 BGM_TaskQueue::~BGM_TaskQueue()
 {
     // Join the worker threads
-    QueueSync(kBGMTaskStopWorkerThread, /* inRunOnRealtimeThread = */ true);
-    QueueSync(kBGMTaskStopWorkerThread, /* inRunOnRealtimeThread = */ false);
-    
+    BGMLogAndSwallowExceptionsMsg("BGM_TaskQueue::~BGM_TaskQueue", "QueueSync", ([&] {
+        QueueSync(kBGMTaskStopWorkerThread, /* inRunOnRealtimeThread = */ true);
+        QueueSync(kBGMTaskStopWorkerThread, /* inRunOnRealtimeThread = */ false);
+    }));
+
     // Destroy the semaphores
     auto destroySemaphore = [] (semaphore_t inSemaphore) {
         kern_return_t theError = semaphore_destroy(mach_task_self(), inSemaphore);
         
-        BGM_Utils::ThrowIfMachError("BGM_TaskQueue::~BGM_TaskQueue", "semaphore_destroy", theError);
+        BGM_Utils::LogIfMachError("BGM_TaskQueue::~BGM_TaskQueue", "semaphore_destroy", theError);
     };
     
     destroySemaphore(mRealTimeThreadWorkQueuedSemaphore);
@@ -157,10 +159,12 @@ void    BGM_TaskQueue::QueueSync_SwapClientShadowMaps(BGM_ClientMap* inClientMap
     QueueSync(kBGMTaskSwapClientShadowMaps, /* inRunOnRealtimeThread = */ true, reinterpret_cast<UInt64>(inClientMap));
 }
 
-void    BGM_TaskQueue::QueueAsync_SendPropertyNotification(AudioObjectPropertySelector inProperty)
+void    BGM_TaskQueue::QueueAsync_SendPropertyNotification(AudioObjectPropertySelector inProperty, AudioObjectID inDeviceID)
 {
-    DebugMsg("BGM_TaskQueue::QueueAsync_SendPropertyNotification: Queueing property notification. inProperty=%u", inProperty);
-    BGM_Task theTask(kBGMTaskSendPropertyNotification, /* inIsSync = */ false, inProperty);
+    DebugMsg("BGM_TaskQueue::QueueAsync_SendPropertyNotification: Queueing property notification. inProperty=%u inDeviceID=%u",
+             inProperty,
+             inDeviceID);
+    BGM_Task theTask(kBGMTaskSendPropertyNotification, /* inIsSync = */ false, inProperty, inDeviceID);
     QueueOnNonRealtimeThread(theTask);
 }
 
@@ -468,7 +472,7 @@ bool    BGM_TaskQueue::ProcessNonRealTimeThreadTask(BGM_Task* inTask)
             {
                 AudioObjectPropertyAddress thePropertyAddress[] = {
                     { static_cast<UInt32>(inTask->GetArg1()), kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMaster } };
-                BGM_PlugIn::Host_PropertiesChanged(kObjectID_Device, 1, thePropertyAddress);
+                BGM_PlugIn::Host_PropertiesChanged(static_cast<AudioObjectID>(inTask->GetArg2()), 1, thePropertyAddress);
             }
             break;
             

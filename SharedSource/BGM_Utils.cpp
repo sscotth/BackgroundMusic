@@ -17,7 +17,7 @@
 //  BGM_Utils.cpp
 //  SharedSource
 //
-//  Copyright © 2016 Kyle Neideck
+//  Copyright © 2016, 2017 Kyle Neideck
 //
 
 // Self Include
@@ -29,9 +29,34 @@
 // System Includes
 #include <MacTypes.h>
 #include <mach/mach_error.h>
+#include <CoreFoundation/CoreFoundation.h>  // For kCFCoreFoundationVersionNumber
 
 
 #pragma clang assume_nonnull begin
+
+dispatch_queue_t BGMGetDispatchQueue_PriorityUserInteractive()
+{
+    long queueClass;
+
+    // Compile-time check that QOS_CLASS_USER_INTERACTIVE can be used. It was added in 10.10.
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 101000  // MAC_OS_X_VERSION_10_10
+    // Runtime check for the same.
+    if(floor(kCFCoreFoundationVersionNumber) > kCFCoreFoundationVersionNumber10_9)
+    {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wpartial-availability"
+        queueClass = QOS_CLASS_USER_INTERACTIVE;
+#pragma clang diagnostic pop
+    }
+    else
+#endif
+    {
+        // Fallback for older versions.
+        queueClass = DISPATCH_QUEUE_PRIORITY_HIGH;
+    }
+
+    return dispatch_get_global_queue(queueClass, 0);
+}
 
 namespace BGM_Utils
 {
@@ -93,13 +118,17 @@ namespace BGM_Utils
     void LogException(const char* __nullable fileName,
                       int lineNumber,
                       const char* callerName,
-                      CAException e)
+                      const CAException& e)
     {
-        LogError("%s:%d:%s: CAException, error code: %d.",
+        OSStatus err = e.GetError();
+        const char err4CC[5] = CA4CCToCString(err);
+
+        LogError("%s:%d:%s: CAException, code: '%s' (%d).",
                  (fileName ? fileName : ""),
                  lineNumber,
                  callerName,
-                 e.GetError());
+                 err4CC,
+                 err);
     }
     
     void LogUnexpectedException(const char* __nullable fileName,
@@ -148,17 +177,21 @@ namespace BGM_Utils
         {
             function();
         }
-        catch(CAException e)
+        catch(const CAException& e)
         {
             // TODO: Can/should we log a stack trace somewhere? (If so, also in the following catch
             //       block.)
             // TODO: Log a warning instead of an error for expected exceptions?
-            LogError("%s:%d:%s: %sCAException, error code: %d. %s%s %s %s ",
+            OSStatus err = e.GetError();
+            const char err4CC[5] = CA4CCToCString(err);
+
+            LogError("%s:%d:%s: %sCAException, code: '%s' (%d). %s%s %s %s ",
                      (fileName ? fileName : ""),
                      lineNumber,
                      callerName,
                      (expected ? "" : "Unexpected "),
-                     e.GetError(),
+                     err4CC,
+                     err,
                      (message ? message : ""),
                      (message ? "." : ""),
                      (expected ? "If you think this might be a bug:"

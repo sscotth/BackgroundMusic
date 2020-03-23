@@ -17,7 +17,7 @@
 //  BGM_Utils.h
 //  SharedSource
 //
-//  Copyright © 2016 Kyle Neideck
+//  Copyright © 2016-2020 Kyle Neideck
 //
 
 #ifndef SharedSource__BGM_Utils
@@ -25,9 +25,10 @@
 
 // PublicUtility Includes
 #include "CADebugMacros.h"
-#include "CAException.h"
 
 #if defined(__cplusplus)
+
+#include "CAException.h"
 
 // STL Includes
 #include <functional>
@@ -36,16 +37,25 @@
 
 // System Includes
 #include <mach/error.h>
+#include <dispatch/dispatch.h>
 
 #pragma mark Macros
 
-// The Assert macro from CADebugMacros with support for format strings added.
-#define BGMAssert(inCondition, inMessage, ...)                                  \
-    if(!(inCondition))                                                          \
-    {                                                                           \
-        DebugMsg(inMessage, ## __VA_ARGS__);                                    \
-        __ASSERT_STOP;                                                          \
-    }
+// The Assert macro from CADebugMacros with support for format strings and line numbers added.
+#if DEBUG
+    #define BGMAssert(inCondition, inMessage, ...)                                  \
+        if(!(inCondition))                                                          \
+        {                                                                           \
+            DebugMsg("%s:%d:%s: " inMessage,                                        \
+                     __FILE__,                                                      \
+                     __LINE__,                                                      \
+                     __FUNCTION__,                                                  \
+                     ## __VA_ARGS__);                                               \
+            __ASSERT_STOP;                                                          \
+        }
+#else
+    #define BGMAssert(inCondition, inMessage, ...)
+#endif /* DEBUG */
 
 #define BGMAssertNonNull(expression) \
     BGMAssertNonNull2((expression), #expression)
@@ -57,6 +67,11 @@
               __LINE__, \
               __FUNCTION__, \
               expressionStr);
+
+// Used to give the first 3 arguments of BGM_Utils::LogAndSwallowExceptions and
+// BGM_Utils::LogUnexpectedExceptions (and probably others in future). Mainly so we can call those
+// functions directly instead of using the macro wrappers.
+#define BGMDbgArgs __FILE__, __LINE__, __FUNCTION__
 
 #pragma mark Objective-C Macros
 
@@ -79,7 +94,7 @@
         __typeof((expression)) value = (expression); \
         BGMAssertNonNull2(value, #expression); \
         BGMNonNullCastHelper<__typeof((expression))>* helper; \
-        (__typeof(helper.asNonNull))value; \
+        (__typeof(helper.asNonNull) __nonnull)value; \
     })
 
 #else /* __has_feature(objc_generics) */
@@ -127,6 +142,10 @@
 
 #pragma clang assume_nonnull begin
 
+#pragma mark C Utility Functions
+
+dispatch_queue_t BGMGetDispatchQueue_PriorityUserInteractive(void);
+
 #if defined(__cplusplus)
 
 #pragma mark C++ Utility Functions
@@ -138,7 +157,7 @@ namespace BGM_Utils
     template <typename T>
     inline T __nonnull NN(T __nullable v) {
         BGMAssertNonNull(v);
-        return v;
+        return static_cast<T __nonnull>(v);
     }
     
     // Log (and swallow) errors returned by Mach functions. Returns false if there was an error.
@@ -171,7 +190,7 @@ namespace BGM_Utils
     void     LogException(const char* __nullable fileName,
                           int lineNumber,
                           const char* callerName,
-                          CAException e);
+                          const CAException& e);
     
     void     LogUnexpectedException(const char* __nullable fileName,
                                     int lineNumber,

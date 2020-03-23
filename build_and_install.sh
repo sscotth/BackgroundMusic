@@ -19,7 +19,7 @@
 #
 # build_and_install.sh
 #
-# Copyright © 2016 Kyle Neideck
+# Copyright © 2016-2020 Kyle Neideck
 # Copyright © 2016 Nick Jacques
 #
 # Builds and installs BGMApp, BGMDriver and BGMXPCHelper. Requires xcodebuild and Xcode.
@@ -40,7 +40,7 @@ set -o errtrace
 cd "$( dirname "${BASH_SOURCE[0]}" )"
 
 error_handler() {
-    LAST_COMMAND="${BASH_COMMAND}" LAST_COMMAND_EXIT_STATUS=$?
+    LAST_COMMAND="$3" LAST_COMMAND_EXIT_STATUS="$2"
 
     # Log the error.
     echo "Failure in $0 at line $1. The last command was (probably)" >> ${LOG_FILE}
@@ -86,7 +86,7 @@ enable_error_handling() {
         # TODO: The version of Bash that ships with OSX only gives you the line number of the
         #       function the error occurred in -- not the line the error occurred on. There are a
         #       few solutions suggested on various websites, but none of them work.
-        trap 'error_handler ${LINENO}' ERR
+        trap 'error_handler ${LINENO} $? "${BASH_COMMAND}"' ERR
     fi
 }
 
@@ -98,6 +98,8 @@ disable_error_handling() {
 # Build for release by default. Use -d for a debug build.
 CONFIGURATION=Release
 #CONFIGURATION=Debug
+
+XCODEBUILD_ACTION="install"
 
 # The default is to clean before installing because we want the log file to have roughly the same
 # information after every build.
@@ -115,14 +117,19 @@ echo -n > ${LOG_FILE}
 
 COREAUDIOD_PLIST="/System/Library/LaunchDaemons/com.apple.audio.coreaudiod.plist"
 
+# Output locations for installing. These are overwritten later if building or archiving.
+#
 # TODO: Should (can?) we use xcodebuild to get these from the Xcode project rather than duplicating
 #       them?
 APP_PATH="/Applications"
 APP_DIR="Background Music.app"
 DRIVER_PATH="/Library/Audio/Plug-Ins/HAL"
 DRIVER_DIR="Background Music Device.driver"
-XPC_HELPER_PATH="$(BGMApp/BGMXPCHelper/safe_install_dir.sh)"
+# XPC_HELPER_OUTPUT_PATH is set below because it depends on the system (when installing).
 XPC_HELPER_DIR="BGMXPCHelper.xpc"
+
+# The root output directory when archiving.
+ARCHIVES_DIR="archives"
 
 GENERAL_ERROR_MSG="Internal script error. Probably a bug in this script."
 BUILD_FAILED_ERROR_MSG="A build command failed. Probably a compilation error."
@@ -144,16 +151,17 @@ if ! [[ -x "${XCODEBUILD}" ]]; then
 fi
 # This check is last because it takes 10 seconds or so if it fails.
 if ! [[ -x "${XCODEBUILD}" ]]; then
-    XCODEBUILD=$(/usr/bin/xcrun --find xcodebuild &2>>${LOG_FILE} || true)
+    XCODEBUILD="$(/usr/bin/xcrun --find xcodebuild 2>>${LOG_FILE} || true)"
 fi
 
-# TODO: Update this when/if Xcode 6 is supported.
-RECOMMENDED_MIN_XCODE_VERSION=7
+RECOMMENDED_MIN_XCODE_VERSION=8
 
 usage() {
     echo "Usage: $0 [options]" >&2
     echo -e "\t-n            Don't clean before building/installing." >&2
     echo -e "\t-d            Debug build. (Release is the default.)" >&2
+    echo -e "\t-a            Build and archive, don't install. See Xcode docs for info about archiving." >&2
+    echo -e "\t-b            Build only, don't install." >&2
     echo -e "\t-w            Ignore compiler warnings. (They're treated as errors by default.)" >&2
     echo -e "\t-x [options]  Extra options to pass to xcodebuild." >&2
     echo -e "\t-c            Continue on script errors. Might not be safe." >&2
@@ -218,12 +226,11 @@ show_spinner() {
     # (wait returns 127 if the process has already exited.)
     if [[ ${EXIT_STATUS} -ne 0 ]] && [[ ${EXIT_STATUS} -ne 127 ]]; then
         ERROR_MSG="$1"
-        if [[ ${DID_TIMEOUT} -eq 0 ]]; then
-            ERROR_MSG+="\n\nFailed command:
-                            ${PREV_COMMAND_STRING}"
+        if [[ ${DID_TIMEOUT} -ne 0 ]]; then
+            ERROR_MSG+="\n\nCommand timed out after ${TIMEOUT} seconds."
         fi
 
-        error_handler ${LINENO}
+        error_handler ${LINENO} ${EXIT_STATUS} "${PREV_COMMAND_STRING}"
 
         if [[ ${CONTINUE_ON_ERROR} -eq 0 ]]; then
             exit ${EXIT_STATUS}
@@ -236,13 +243,32 @@ show_spinner() {
 }
 
 parse_options() {
-    while getopts ":ndwx:ch" opt; do
+    while getopts ":ndabwx:ch" opt; do
         case $opt in
             n)
                 CLEAN=""
                 ;;
             d)
                 CONFIGURATION="Debug"
+                ;;
+            a)
+                # The "archive" action makes a build for distribution. It's the same as the archive
+                # option in Xcode. It won't install.
+                XCODEBUILD_ACTION="archive"
+                # The dirs xcodebuild will put the archives in.
+                APP_PATH="$ARCHIVES_DIR/BGMApp.xcarchive"
+                XPC_HELPER_OUTPUT_PATH="$ARCHIVES_DIR/BGMXPCHelper.xcarchive"
+                DRIVER_PATH="$ARCHIVES_DIR/BGMDriver.xcarchive"
+                ;;
+            b)
+                # Just build; don't install.
+                XCODEBUILD_ACTION="build"
+                # The dirs xcodebuild will build in.
+                # TODO: If these dirs were created by running this script without -b, they'll be
+                #       owned by root and xcodebuild will fail.
+                APP_PATH="./BGMApp/build"
+                XPC_HELPER_OUTPUT_PATH="./BGMApp/build"
+                DRIVER_PATH="./BGMDriver/build"
                 ;;
             w)
                 # TODO: What if they also pass their own OTHER_CFLAGS with -x?
@@ -281,7 +307,8 @@ check_xcode() {
 
     # First, check xcodebuild exists on the system an is an executable.
     if ! [[ -x "${XCODEBUILD}" ]] || ! /usr/bin/xcode-select --print-path &>/dev/null || \
-        ! pkgutil --pkg-info=com.apple.pkg.CLTools_Executables &>/dev/null; then
+        (! [[ -e /Library/Developer/CommandLineTools/usr/bin/git ]] && \
+            ! pkgutil --pkg-info=com.apple.pkg.CLTools_Executables &>/dev/null); then
         EXIT_CODE=${CHECK_XCODE_ERR_NO_CLTOOLS}
     fi
 
@@ -499,7 +526,7 @@ log_debug_info() {
              "(\"$(git show -s --format=%s HEAD 2>&1)\")" >> ${LOG_FILE}
 
         echo "Using xcodebuild: ${XCODEBUILD}" >> ${LOG_FILE}
-        echo "Using BGMXPCHelper path: ${XPC_HELPER_PATH}" >> ${LOG_FILE}
+        echo "Using BGMXPCHelper output path: ${XPC_HELPER_OUTPUT_PATH}" >> ${LOG_FILE}
 
         xcode-select --version >> ${LOG_FILE} 2>&1
         echo "Xcode path: $(xcode-select --print-path 2>&1)" >> ${LOG_FILE}
@@ -517,6 +544,19 @@ log_debug_info() {
     LOG_DEBUG_INFO_TASK_PID=$!
 }
 
+# Cleans the build products and intermediate files for a build scheme.
+#
+# Params:
+#  - The Xcode build scheme to clean, e.g. "Background Music Device".
+clean() {
+    if [[ "${CLEAN}" != "" ]]; then
+        ${SUDO} "${XCODEBUILD}" -scheme "$1" \
+                                -configuration ${CONFIGURATION} \
+                                BUILD_DIR=./build \
+                                ${CLEAN} >> ${LOG_FILE} 2>&1
+    fi
+}
+
 # Register our handler so we can print a message and clean up if there's an error.
 enable_error_handling
 
@@ -529,15 +569,25 @@ if [[ $(id -u) -eq 0 ]]; then
 fi
 
 # Print initial message.
-echo "$(bold_face About to install Background Music). Please pause all audio, if you can."
-[[ "${CONFIGURATION}" == "Debug" ]] && echo "Debug build."
-echo
-echo "This script will install:"
-echo " - ${APP_PATH}/${APP_DIR}"
-echo " - ${DRIVER_PATH}/${DRIVER_DIR}"
-echo " - ${XPC_HELPER_PATH}/${XPC_HELPER_DIR}"
-echo " - /Library/LaunchDaemons/com.bearisdriving.BGM.XPCHelper.plist"
-echo
+if [[ "${XCODEBUILD_ACTION}" == "install" ]]; then
+    XPC_HELPER_OUTPUT_PATH="$(BGMApp/BGMXPCHelper/safe_install_dir.sh)"
+
+    echo "$(bold_face About to install Background Music). Please pause all audio, if you can."
+    [[ "${CONFIGURATION}" == "Debug" ]] && echo "Debug build."
+    echo
+    echo "This script will install:"
+    echo " - ${APP_PATH}/${APP_DIR}"
+    echo " - ${DRIVER_PATH}/${DRIVER_DIR}"
+    echo " - ${XPC_HELPER_OUTPUT_PATH}/${XPC_HELPER_DIR}"
+    echo " - /Library/LaunchDaemons/com.bearisdriving.BGM.XPCHelper.plist"
+    echo
+elif [[ "${XCODEBUILD_ACTION}" == "archive" ]]; then
+    echo "$(bold_face Building and archiving Background Music...)"
+    echo
+else
+    echo "$(bold_face Building Background Music...)"
+    echo
+fi
 
 # Make sure Xcode and the command line tools are installed and recent enough.
 # This sets XCODE_VERSION to major.minor, e.g. 8.3, or -1 if Xcode isn't installed.
@@ -545,11 +595,13 @@ XCODE_VERSION=$((${XCODEBUILD} -version 2>/dev/null || echo 'V -1') | head -n 1 
 check_xcode &
 CHECK_XCODE_TASK_PID=$!
 
-read -p "Continue (y/N)? " CONTINUE_INSTALLATION
+if [[ "${XCODEBUILD_ACTION}" == "install" ]]; then
+    read -p "Continue (y/N)? " CONTINUE_INSTALLATION
 
-if [[ "${CONTINUE_INSTALLATION}" != "y" ]] && [[ "${CONTINUE_INSTALLATION}" != "Y" ]]; then
-    echo "Installation cancelled."
-    exit 0
+    if [[ "${CONTINUE_INSTALLATION}" != "y" ]] && [[ "${CONTINUE_INSTALLATION}" != "Y" ]]; then
+        echo "Installation cancelled."
+        exit 0
+    fi
 fi
 
 # If the check_xcode process has already finished, we can check the result early.
@@ -563,14 +615,17 @@ if ! is_alive ${CHECK_XCODE_TASK_PID}; then
     enable_error_handling
 fi
 
-# Update the user's sudo timestamp. (Prompts the user for their password.)
-# Don't call sudo -v if this is a Travis CI build.
-if ([[ -z ${TRAVIS:-} ]] || [[ "${TRAVIS}" != true ]]) && ! sudo -v; then
-    echo "$(tput setaf 9)ERROR$(tput sgr0): This script must be run by a user with administrator" \
-         "(sudo) privileges." >&2
-    exit 1
+# Update the user's sudo timestamp if we're going to need to sudo at some point. This prompts the
+# user for their password.
+if [[ "${XCODEBUILD_ACTION}" == "install" ]]; then
+    # Don't call sudo -v if this is a Travis CI build.
+    if ([[ -z ${TRAVIS:-} ]] || [[ "${TRAVIS}" != true ]]) && ! sudo -v; then
+        echo "$(tput setaf 9)ERROR$(tput sgr0): This script must be run by a user with" \
+             "administrator (sudo) privileges." >&2
+        exit 1
+    fi
+    echo
 fi
-echo
 
 while [[ ${NEED_TO_HANDLE_CHECK_XCODE_RESULT} -ne 0 ]]; do
     disable_error_handling
@@ -581,124 +636,205 @@ while [[ ${NEED_TO_HANDLE_CHECK_XCODE_RESULT} -ne 0 ]]; do
     enable_error_handling
 done
 
-log_debug_info $*
+log_debug_info "$@"
+
+# Set some variables that control the compilation commands below.
+if [[ "${XCODEBUILD_ACTION}" == "install" ]]; then
+    SUDO="sudo"
+    ACTIONING="Installing"
+    DSTROOT_ARG="DSTROOT=/"
+elif [[ "${XCODEBUILD_ACTION}" == "archive" ]]; then
+    SUDO=""
+    ACTIONING="Building and archiving"
+    DSTROOT_ARG=""
+else
+    # No need to sudo if we're only building.
+    SUDO=""
+    ACTIONING="Building"
+    DSTROOT_ARG=""
+fi
+
+# Enable AddressSanitizer in debug builds to catch memory bugs. Allow ENABLE_ASAN to be set as an
+# environment variable by only setting it here if it isn't already set. (Used by package.sh.)
+if [[ "${CONFIGURATION}" == "Debug" ]]; then
+    ENABLE_ASAN="${ENABLE_ASAN:-YES}"
+else
+    ENABLE_ASAN="${ENABLE_ASAN:-NO}"
+fi
+
+# Clean all projects. Done separately to workaround what I think is a bug in Xcode 10.0. If you just
+# add "clean" to the other xcodebuild commands, they seem to fail because of the DSTROOT="/" arg.
+if [[ "${CLEAN}" != "" ]]; then
+    # Disable the -e shell option and error trap for build commands so we can handle errors
+    # differently.
+    (disable_error_handling
+        clean "Background Music Device"
+        clean "PublicUtility"
+        clean "BGMXPCHelper"
+        clean "Background Music"
+        # Also delete the build dirs as files/dirs left in them can make the install step fail and,
+        # if you're using Xcode 10, the commands above will have cleaned the DerivedData dir but not
+        # the build dirs. I think this is a separate Xcode bug. See
+        # <http://www.openradar.me/40906897>.
+        ${SUDO} /bin/rm -rf BGMDriver/build BGMApp/build >> ${LOG_FILE} 2>&1) &
+
+    echo "Cleaning"
+    show_spinner "Clean command failed. Try deleting the directories BGMDriver/build and \
+BGMApp/build manually and running '$0 -n' to skip the cleaning step."
+fi
+
+# Prints the -archivePath option if we're archiving (i.e. making a .xcarchive). Does nothing if not.
+# Params:
+#  - The name for the archive. The .xcarchive extension will be added.
+archivePath() {
+    if [[ "${XCODEBUILD_ACTION}" == "archive" ]]; then
+        echo "-archivePath"
+        echo "$ARCHIVES_DIR/$1"
+    fi
+}
+
+# Prints the INSTALL_OWNER and INSTALL_GROUP arguments to use for the xcodebuild commands.
+ownershipArgs() {
+    if [[ "${XCODEBUILD_ACTION}" != "install" ]]; then
+        # Stop xcodebuild from trying to chown the files in the archive to root when making an
+        # archive, so we don't need to use sudo.
+        echo "INSTALL_OWNER="
+        echo "INSTALL_GROUP="
+    fi
+}
 
 # BGMDriver
 
-echo "[1/3] Installing the virtual audio device $(bold_face ${DRIVER_DIR}) to" \
-     "$(bold_face ${DRIVER_PATH})." \
+echo "[1/3] ${ACTIONING} the virtual audio device $(bold_face ${DRIVER_DIR}) to" \
+         "$(bold_face ${DRIVER_PATH})" \
      | tee -a ${LOG_FILE}
 
-# Disable the -e shell option and error trap for build commands so we can handle errors differently.
 (disable_error_handling
-    # Build Apple's PublicUtility classes as a static library.
-    sudo "${XCODEBUILD}" -project BGMDriver/BGMDriver.xcodeproj \
-                         -target "PublicUtility" \
-                         -configuration ${CONFIGURATION} \
-                         RUN_CLANG_STATIC_ANALYZER=0 \
-                         ${XCODEBUILD_OPTIONS} \
-                         ${CLEAN} build >> ${LOG_FILE} 2>&1) &
-
-(disable_error_handling
-    # Build and install BGMDriver
-    # TODO: Should these use -scheme instead?
-    sudo "${XCODEBUILD}" -project BGMDriver/BGMDriver.xcodeproj \
-                         -target "Background Music Device" \
-                         -configuration ${CONFIGURATION} \
-                         RUN_CLANG_STATIC_ANALYZER=0 \
-                         DSTROOT="/" \
-                         ${XCODEBUILD_OPTIONS} \
-                         ${CLEAN} install >> ${LOG_FILE} 2>&1) &
+    # Build and, if requested, archive or install BGMDriver.
+    ${SUDO} "${XCODEBUILD}" -scheme "Background Music Device" \
+                            -configuration ${CONFIGURATION} \
+                            -enableAddressSanitizer ${ENABLE_ASAN} \
+                            $(archivePath BGMDriver) \
+                            BUILD_DIR=./build \
+                            RUN_CLANG_STATIC_ANALYZER=0 \
+                            $(ownershipArgs) \
+                            ${DSTROOT_ARG} \
+                            ${XCODEBUILD_OPTIONS} \
+                            "${XCODEBUILD_ACTION}" >> ${LOG_FILE} 2>&1) &
 
 show_spinner "${BUILD_FAILED_ERROR_MSG}"
 
 # BGMXPCHelper
 
-echo "[2/3] Installing $(bold_face ${XPC_HELPER_DIR}) to $(bold_face ${XPC_HELPER_PATH})." \
-     | tee -a ${LOG_FILE}
+echo "[2/3] ${ACTIONING} $(bold_face ${XPC_HELPER_DIR}) to $(bold_face ${XPC_HELPER_OUTPUT_PATH})" \
+    | tee -a ${LOG_FILE}
 
+xpcHelperInstallPathArg() {
+    if [[ "${XCODEBUILD_ACTION}" == "install" ]]; then
+        echo "INSTALL_PATH=${XPC_HELPER_OUTPUT_PATH}"
+    fi
+}
+
+# The Xcode project file is configured so that xcodebuild will call post_install.sh after it
+# finishes building. It calls post_install.sh with the ACTION env var set to "install" when
+# XCODEBUILD_ACTION is set to "archive" here. The REAL_ACTION arg in this command is a workaround
+# that lets post_install.sh know when we're archiving.
 (disable_error_handling
-    sudo "${XCODEBUILD}" -project BGMApp/BGMApp.xcodeproj \
-                         -target BGMXPCHelper \
-                         -configuration ${CONFIGURATION} \
-                         RUN_CLANG_STATIC_ANALYZER=0 \
-                         DSTROOT="/" \
-                         INSTALL_PATH="${XPC_HELPER_PATH}" \
-                         ${XCODEBUILD_OPTIONS} \
-                         ${CLEAN} install >> ${LOG_FILE} 2>&1) &
+    ${SUDO} "${XCODEBUILD}" -scheme BGMXPCHelper \
+                            -configuration ${CONFIGURATION} \
+                            -enableAddressSanitizer ${ENABLE_ASAN} \
+                            $(archivePath BGMXPCHelper) \
+                            BUILD_DIR=./build \
+                            RUN_CLANG_STATIC_ANALYZER=0 \
+                            $(xpcHelperInstallPathArg) \
+                            $(ownershipArgs) \
+                            REAL_ACTION="${XCODEBUILD_ACTION}" \
+                            ${DSTROOT_ARG} \
+                            ${XCODEBUILD_OPTIONS} \
+                            "${XCODEBUILD_ACTION}" >> ${LOG_FILE} 2>&1) &
 
 show_spinner "${BUILD_FAILED_ERROR_MSG}"
 
 # BGMApp
 
-echo "[3/3] Installing $(bold_face ${APP_DIR}) to $(bold_face ${APP_PATH})." \
+echo "[3/3] ${ACTIONING} $(bold_face ${APP_DIR}) to $(bold_face ${APP_PATH})" \
      | tee -a ${LOG_FILE}
 
 (disable_error_handling
-    sudo "${XCODEBUILD}" -project BGMApp/BGMApp.xcodeproj \
-                         -target "Background Music" \
-                         -configuration ${CONFIGURATION} \
-                         RUN_CLANG_STATIC_ANALYZER=0 \
-                         DSTROOT="/" \
-                         ${XCODEBUILD_OPTIONS} \
-                         ${CLEAN} install >> ${LOG_FILE} 2>&1) &
+    ${SUDO} "${XCODEBUILD}" -scheme "Background Music" \
+                            -configuration ${CONFIGURATION} \
+                            -enableAddressSanitizer ${ENABLE_ASAN} \
+                            $(archivePath BGMApp) \
+                            BUILD_DIR=./build \
+                            RUN_CLANG_STATIC_ANALYZER=0 \
+                            $(ownershipArgs) \
+                            ${DSTROOT_ARG} \
+                            ${XCODEBUILD_OPTIONS} \
+                            "${XCODEBUILD_ACTION}" >> ${LOG_FILE} 2>&1) &
 
 show_spinner "${BUILD_FAILED_ERROR_MSG}"
 
-# Fix Background Music.app owner/group.
-#
-# We have to run xcodebuild as root to install BGMXPCHelper because it installs to directories
-# owned by root. But that means the build directory gets created by root, and since BGMApp uses the
-# same build directory we have to run xcodebuild as root to install BGMApp as well.
-#
-# TODO: Can't we just chown -R the build dir before we install BGMApp? Then we wouldn't have to
-#       install BGMApp as root. (But maybe still handle the unlikely case of APP_PATH not being
-#       user-writable.)
-sudo chown -R "$(whoami):admin" "${APP_PATH}/${APP_DIR}"
+if [[ "${XCODEBUILD_ACTION}" == "install" ]]; then
+    # Fix Background Music.app owner/group.
+    #
+    # We have to run xcodebuild as root to install BGMXPCHelper because it installs to directories
+    # owned by root. But that means the build directory gets created by root, and since BGMApp uses
+    # the same build directory we have to run xcodebuild as root to install BGMApp as well.
+    #
+    # TODO: Can't we just chown -R the build dir before we install BGMApp? Then we wouldn't have to
+    #       install BGMApp as root. (But maybe still handle the unlikely case of APP_PATH not being
+    #       user-writable.)
+    sudo chown -R "$(whoami):admin" "${APP_PATH}/${APP_DIR}"
 
-# Fix the build directories' owner/group. This is mainly so the whole source directory can be
-# deleted easily after installing.
-sudo chown -R "$(whoami):admin" "BGMApp/build" "BGMDriver/build"
+    # Fix the build directories' owner/group. This is mainly so the whole source directory can be
+    # deleted easily after installing.
+    sudo chown -R "$(whoami):admin" "BGMApp/build" "BGMDriver/build"
 
-# Restart coreaudiod.
+    # Restart coreaudiod.
 
-echo "Restarting coreaudiod to load the virtual audio device." \
-     | tee -a ${LOG_FILE}
+    echo "Restarting coreaudiod to load the virtual audio device." \
+         | tee -a ${LOG_FILE}
 
-# The extra or-clauses are fallback versions of the command that restarts coreaudiod. Apparently
-# some of these commands don't work with older versions of launchctl, so I figure there's no harm in
-# trying a bunch of different ways (which should all work).
-(sudo launchctl kill SIGTERM system/com.apple.audio.coreaudiod &>/dev/null || \
-    sudo launchctl kill TERM system/com.apple.audio.coreaudiod &>/dev/null || \
-    sudo launchctl kill 15 system/com.apple.audio.coreaudiod &>/dev/null || \
-    sudo launchctl kill -15 system/com.apple.audio.coreaudiod &>/dev/null || \
-    (sudo launchctl unload "${COREAUDIOD_PLIST}" &>/dev/null && \
-        sudo launchctl load "${COREAUDIOD_PLIST}" &>/dev/null) || \
-    sudo killall coreaudiod &>/dev/null) && \
-    sleep 5
+    # The extra or-clauses are fallback versions of the command that restarts coreaudiod. Apparently
+    # some of these commands don't work with older versions of launchctl, so I figure there's no
+    # harm in trying a bunch of different ways (which should all work).
+    (sudo launchctl kickstart -k system/com.apple.audio.coreaudiod &>/dev/null || \
+        sudo launchctl kill SIGTERM system/com.apple.audio.coreaudiod &>/dev/null || \
+        sudo launchctl kill TERM system/com.apple.audio.coreaudiod &>/dev/null || \
+        sudo launchctl kill 15 system/com.apple.audio.coreaudiod &>/dev/null || \
+        sudo launchctl kill -15 system/com.apple.audio.coreaudiod &>/dev/null || \
+        (sudo launchctl unload "${COREAUDIOD_PLIST}" &>/dev/null && \
+            sudo launchctl load "${COREAUDIOD_PLIST}" &>/dev/null) || \
+        sudo killall coreaudiod &>/dev/null) && \
+        sleep 5
 
-# Invalidate sudo ticket
-sudo -k
+    # Invalidate sudo ticket
+    sudo -k
 
-# Open BGMApp.
-#
-# I'd rather not open BGMApp here, or at least ask first, but you have to change your default audio
-# device after restarting coreaudiod and this is the easiest way.
-echo "Launching Background Music."
+    # Open BGMApp. We have to change the default audio device after restarting coreaudiod and this
+    # is the easiest way.
+    echo "Launching Background Music."
 
-ERROR_MSG="${BGMAPP_FAILED_TO_START_ERROR_MSG}"
-open "${APP_PATH}/${APP_DIR}"
+    ERROR_MSG="${BGMAPP_FAILED_TO_START_ERROR_MSG}"
+    open "${APP_PATH}/${APP_DIR}"
 
-# Ignore script errors from this point.
-disable_error_handling
+    # Ignore script errors from this point.
+    disable_error_handling
 
-# Wait up to 5 seconds for Background Music to start.
-(trap 'exit 1' TERM
-    while ! (ps -Ao ucomm= | grep 'Background Music' > /dev/null); do
-        sleep 1
-    done) &
-show_spinner "${BGMAPP_FAILED_TO_START_ERROR_MSG}" 5
+    # Wait up to 5 seconds for Background Music to start.
+    (trap 'exit 1' TERM
+        while ! (ps -Ao ucomm= | grep 'Background Music' > /dev/null); do
+            sleep 1
+        done) &
+    show_spinner "${BGMAPP_FAILED_TO_START_ERROR_MSG}" 5
 
-echo "Done."
-
+    echo "Done."
+elif [[ "${XCODEBUILD_ACTION}" == "archive" ]]; then
+    # Copy the dSYMs (debug symbols) into the correct directories in the archives. I haven't been
+    # able to figure out why Xcode isn't doing this automatically.
+    cp -r "BGMDriver/build/Release/Background Music Device.driver.dSYM" "$DRIVER_PATH/dSYMs"
+    cp -r "BGMApp/build/Release/BGMXPCHelper.xpc.dSYM" "$XPC_HELPER_OUTPUT_PATH/dSYMs"
+    mv "$APP_PATH/Products/Applications/Background Music.app/Contents/MacOS/Background Music.dSYM" \
+       "$APP_PATH/dSYMs"
+fi
 

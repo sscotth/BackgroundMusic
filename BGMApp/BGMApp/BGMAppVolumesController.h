@@ -14,25 +14,36 @@
 // along with Background Music. If not, see <http://www.gnu.org/licenses/>.
 
 //
-//  BGMOutputDevicePrefs.h
+//  BGMAppVolumesController.h
 //  BGMApp
 //
-//  Copyright © 2016 Kyle Neideck
+//  Copyright © 2017 Kyle Neideck
 //
 
 // Local Includes
 #import "BGMAudioDeviceManager.h"
 
 // System Includes
-#import <AppKit/AppKit.h>
+#import <Cocoa/Cocoa.h>
 
 
 #pragma clang assume_nonnull begin
 
-@interface BGMOutputDevicePrefs : NSObject
+@interface BGMAppVolumesController : NSObject
 
-- (id) initWithAudioDevices:(BGMAudioDeviceManager*)inAudioDevices;
-- (void) populatePreferencesMenu:(NSMenu*)prefsMenu;
+- (id) initWithMenu:(NSMenu*)menu
+      appVolumeView:(NSView*)view
+       audioDevices:(BGMAudioDeviceManager*)audioDevices;
+
+// See BGMBackgroundMusicDevice::SetAppVolume.
+- (void)  setVolume:(SInt32)volume
+forAppWithProcessID:(pid_t)processID
+           bundleID:(NSString* __nullable)bundleID;
+
+// See BGMBackgroundMusicDevice::SetPanVolume.
+- (void) setPanPosition:(SInt32)pan
+    forAppWithProcessID:(pid_t)processID
+               bundleID:(NSString* __nullable)bundleID;
 
 @end
 
